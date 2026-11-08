@@ -207,3 +207,177 @@ func (r *StatsRepository) Attention(ctx context.Context, limit int) ([]statsdom.
 	}
 	return out, nil
 }
+
+// insightsSQL computes the fleet-wide storage, coverage and capacity totals in
+// one round-trip. Server metrics only count online servers: an offline
+// server's last snapshot is stale.
+const insightsSQL = `
+WITH user_dbs AS (
+	SELECT d.id FROM databases d
+	WHERE d.deleted_at IS NULL AND d.status = 'active' AND NOT d.system
+), latest_verify AS (
+	SELECT DISTINCT ON (database_id) database_id, verify_status
+	FROM backups
+	WHERE verify_status IN ('passed','failed') AND verified_at > now() - interval '30 days'
+	ORDER BY database_id, verified_at DESC
+), live_health AS (
+	SELECT h.* FROM server_health h
+	JOIN servers s ON s.id = h.server_id
+	WHERE s.deleted_at IS NULL AND s.status = 'online'
+)
+SELECT
+	(SELECT COALESCE(sum(size_bytes), 0)::bigint FROM databases WHERE deleted_at IS NULL),
+	(SELECT COALESCE(sum(size_bytes), 0)::bigint FROM backups WHERE status = 'completed'),
+	(SELECT count(*) FROM backups WHERE status = 'completed'),
+	(SELECT COALESCE(sum(disk_used_bytes), 0)::bigint FROM live_health),
+	(SELECT COALESCE(sum(disk_total_bytes), 0)::bigint FROM live_health),
+	(SELECT COALESCE(sum(mem_used_bytes), 0)::bigint FROM live_health),
+	(SELECT COALESCE(sum(mem_total_bytes), 0)::bigint FROM live_health),
+	(SELECT avg(cpu_pct)::float8 FROM live_health),
+	(SELECT COALESCE(sum(active_connections), 0)::int FROM databases WHERE deleted_at IS NULL),
+	(SELECT count(*) FROM user_dbs),
+	(SELECT count(*) FROM user_dbs u
+	 WHERE EXISTS (SELECT 1 FROM backup_schedules bs WHERE bs.database_id = u.id AND bs.enabled)),
+	(SELECT count(*) FROM user_dbs u
+	 WHERE EXISTS (SELECT 1 FROM backups b WHERE b.database_id = u.id AND b.status = 'completed'
+	               AND b.completed_at > now() - interval '7 days')),
+	(SELECT count(*) FROM user_dbs u JOIN latest_verify lv ON lv.database_id = u.id
+	 WHERE lv.verify_status = 'passed')`
+
+const enginesSQL = `
+SELECT i.engine, count(DISTINCT i.id), count(d.id), COALESCE(sum(d.size_bytes), 0)::bigint
+FROM instances i
+LEFT JOIN databases d ON d.instance_id = i.id AND d.deleted_at IS NULL
+WHERE i.deleted_at IS NULL
+GROUP BY i.engine
+ORDER BY 4 DESC, 1`
+
+const backupDaysSQL = `
+SELECT day::date,
+       count(b.id) FILTER (WHERE b.status = 'completed'),
+       count(b.id) FILTER (WHERE b.status = 'failed'),
+       COALESCE(sum(b.size_bytes) FILTER (WHERE b.status = 'completed'), 0)::bigint
+FROM generate_series((now() AT TIME ZONE 'UTC')::date - 6, (now() AT TIME ZONE 'UTC')::date, interval '1 day') AS day
+LEFT JOIN backups b ON b.status IN ('completed','failed')
+	AND (b.created_at AT TIME ZONE 'UTC')::date = day::date
+GROUP BY day
+ORDER BY day`
+
+// Insights returns fleet-wide storage, data and capacity aggregates.
+func (r *StatsRepository) Insights(ctx context.Context) (statsdom.Insights, error) {
+	var in statsdom.Insights
+	err := r.pool.QueryRow(ctx, insightsSQL).Scan(
+		&in.DatabaseBytes, &in.BackupBytes, &in.BackupsStored,
+		&in.DiskUsedBytes, &in.DiskTotalBytes, &in.MemUsedBytes, &in.MemTotalBytes, &in.AvgCPUPct,
+		&in.ActiveConnections,
+		&in.CoverageDatabases, &in.CoverageScheduled, &in.CoverageBackedUp7d, &in.CoverageVerified,
+	)
+	if err != nil {
+		return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights: %w", err))
+	}
+
+	rows, err := r.pool.Query(ctx, enginesSQL)
+	if err != nil {
+		return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights engines: %w", err))
+	}
+	for rows.Next() {
+		var e statsdom.EngineStat
+		if err := rows.Scan(&e.Engine, &e.Instances, &e.Databases, &e.SizeBytes); err != nil {
+			rows.Close()
+			return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights engines scan: %w", err))
+		}
+		in.Engines = append(in.Engines, e)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights engines rows: %w", err))
+	}
+
+	rows, err = r.pool.Query(ctx, backupDaysSQL)
+	if err != nil {
+		return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights backups: %w", err))
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d statsdom.BackupDay
+		if err := rows.Scan(&d.Day, &d.Completed, &d.Failed, &d.Bytes); err != nil {
+			return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights backups scan: %w", err))
+		}
+		in.BackupDays = append(in.BackupDays, d)
+	}
+	if err := rows.Err(); err != nil {
+		return statsdom.Insights{}, apperr.Internal(fmt.Errorf("insights backups rows: %w", err))
+	}
+	return in, nil
+}
+
+// LargestDatabases returns up to limit non-system databases, largest first.
+func (r *StatsRepository) LargestDatabases(ctx context.Context, limit int) ([]statsdom.DatabaseSize, error) {
+	const q = `
+		SELECT d.id, d.name, i.id, i.name, i.engine, d.size_bytes, d.active_connections, i.server_id
+		FROM databases d
+		JOIN instances i ON i.id = d.instance_id AND i.deleted_at IS NULL
+		WHERE d.deleted_at IS NULL AND NOT d.system AND d.status <> 'missing'
+		ORDER BY d.size_bytes DESC, d.name
+		LIMIT $1`
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, apperr.Internal(fmt.Errorf("largest databases: %w", err))
+	}
+	defer rows.Close()
+	var out []statsdom.DatabaseSize
+	for rows.Next() {
+		var d statsdom.DatabaseSize
+		var serverID *uuid.UUID
+		if err := rows.Scan(&d.ID, &d.Name, &d.InstanceID, &d.InstanceName, &d.Engine,
+			&d.SizeBytes, &d.Connections, &serverID); err != nil {
+			return nil, apperr.Internal(fmt.Errorf("largest databases scan: %w", err))
+		}
+		if serverID != nil {
+			d.ServerID = *serverID
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperr.Internal(fmt.Errorf("largest databases rows: %w", err))
+	}
+	return out, nil
+}
+
+// ServerLoads returns up to limit servers: unhealthy ones first, then by their
+// highest CPU, memory or disk utilisation.
+func (r *StatsRepository) ServerLoads(ctx context.Context, limit int) ([]statsdom.ServerLoad, error) {
+	const q = `
+		SELECT s.id, s.name, s.status, h.cpu_pct::float8,
+		       h.mem_used_bytes, h.mem_total_bytes, h.disk_used_bytes, h.disk_total_bytes, h.collected_at,
+		       (SELECT count(*) FROM instances i WHERE i.server_id = s.id AND i.deleted_at IS NULL),
+		       (SELECT count(*) FROM databases d JOIN instances i ON i.id = d.instance_id
+		        WHERE i.server_id = s.id AND i.deleted_at IS NULL AND d.deleted_at IS NULL)
+		FROM servers s
+		LEFT JOIN server_health h ON h.server_id = s.id
+		WHERE s.deleted_at IS NULL
+		ORDER BY s.status IN ('offline','error') DESC,
+		         GREATEST(h.cpu_pct::float8,
+		                  100.0 * h.mem_used_bytes / NULLIF(h.mem_total_bytes, 0),
+		                  100.0 * h.disk_used_bytes / NULLIF(h.disk_total_bytes, 0)) DESC NULLS LAST,
+		         s.name
+		LIMIT $1`
+	rows, err := r.pool.Query(ctx, q, limit)
+	if err != nil {
+		return nil, apperr.Internal(fmt.Errorf("server loads: %w", err))
+	}
+	defer rows.Close()
+	var out []statsdom.ServerLoad
+	for rows.Next() {
+		var s statsdom.ServerLoad
+		if err := rows.Scan(&s.ID, &s.Name, &s.Status, &s.CPUPct, &s.MemUsedBytes, &s.MemTotalBytes,
+			&s.DiskUsedBytes, &s.DiskTotalBytes, &s.CollectedAt, &s.Instances, &s.Databases); err != nil {
+			return nil, apperr.Internal(fmt.Errorf("server loads scan: %w", err))
+		}
+		out = append(out, s)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, apperr.Internal(fmt.Errorf("server loads rows: %w", err))
+	}
+	return out, nil
+}

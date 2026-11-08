@@ -19,6 +19,17 @@ import (
 type fakeStats struct {
 	summary   statsdom.Summary
 	attention []statsdom.Attention
+	insights  statsdom.Insights
+	databases []statsdom.DatabaseSize
+	servers   []statsdom.ServerLoad
+}
+
+func (f fakeStats) Insights(context.Context) (statsdom.Insights, error) { return f.insights, nil }
+func (f fakeStats) LargestDatabases(_ context.Context, limit int) ([]statsdom.DatabaseSize, error) {
+	return f.databases[:min(limit, len(f.databases))], nil
+}
+func (f fakeStats) ServerLoads(_ context.Context, limit int) ([]statsdom.ServerLoad, error) {
+	return f.servers[:min(limit, len(f.servers))], nil
 }
 
 func (f fakeStats) Summary(context.Context) (statsdom.Summary, error) { return f.summary, nil }
