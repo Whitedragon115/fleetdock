@@ -6,10 +6,10 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, u
 import { useQueryClient } from "@tanstack/react-query";
 
 import { useConfirm } from "@/components/confirm";
-import { ThemeToggle } from "@/components/theme-toggle";
 import { CreateTableModal } from "@/components/database/create-table-modal";
 import { QueryConsole } from "@/components/database/query-console";
-import { Button, ButtonLink, EmptyState, IconButton, QueryError, Spinner } from "@/components/ui";
+import { ThemeToggle } from "@/components/theme-toggle";
+import { Button, ButtonLink, EmptyState, IconButton, QueryError } from "@/components/ui";
 import { dialectOf, type Dialect } from "@/lib/data-browser/cells";
 import {
   lastDatabase,
@@ -40,6 +40,7 @@ import { DatabaseChooser, DatabasePicker } from "./database-picker";
 import { buildItems, ObjectTree, type ObjectTreeHandle } from "./object-tree";
 import { TabBar, type CloseKind } from "./tab-bar";
 import { ObjectTab } from "./object-tab";
+import { DataBrowserSkeleton } from "./skeleton";
 import { TableTab } from "./table-tab";
 
 const MIN_SIDE = 200;
@@ -209,16 +210,16 @@ export function DataBrowser({
     </>
   );
 
-  if (!databaseId) {
+  // Without ?db= but with a database used before, the effect above is about
+  // to reopen it: keep showing the skeleton instead of flashing the chooser.
+  // (The DataBrowser only renders in the browser, so storage is readable.)
+  // While the database loads, the skeleton covers the picker too, so it never
+  // says "Choose a database" for a database that is on its way.
+  if (!databaseId && !lastDatabase()) {
     return shell(null, <DatabaseChooser onPick={(id) => void pick(id)} />);
   }
-  if (isLoading) {
-    return shell(
-      null,
-      <div className="dbx-center">
-        <Spinner /> Loading…
-      </div>,
-    );
+  if (!databaseId || isLoading) {
+    return <DataBrowserSkeleton />;
   }
   if (!db) {
     return shell(
@@ -533,6 +534,7 @@ function Workspace({
         <CreateTableModal
           databaseId={db.id}
           schema={pg ? "public" : null}
+          dialect={dialect}
           onClose={() => setCreating(false)}
           onCreated={(name) => {
             setCreating(false);
@@ -593,6 +595,7 @@ function TabContent({
       canWrite={canWrite}
       canBackup={canBackup}
       dialect={dialect}
+      engine={db.instance?.engine}
       dispatch={dispatch}
       onDirty={onDirty}
       onOpen={onOpen}
@@ -631,7 +634,7 @@ function Welcome({
       </h2>
       <p className="muted text-sm m-0 max-w-lg">
         {items
-          ? "Pick a table in the sidebar. A single click previews it; a double click keeps it open in its own tab."
+          ? "Pick a table in the sidebar. A single click previews it; a double click (or Shift/Ctrl-click) keeps it open in its own tab."
           : "Tables you create appear in the sidebar."}
       </p>
       <div className="flex gap-2 mt-4">

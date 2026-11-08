@@ -1,8 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+  type Dispatch,
+} from "react";
 
 import { useConfirm } from "@/components/confirm";
+import { JsonViewer } from "./json-viewer";
 import { FilterEditor, ImportCSV, RowRange } from "./row-tools";
 import { SchemaView } from "@/components/database/table-structure";
 import { useToast } from "@/components/toast";
@@ -17,11 +27,18 @@ import {
   Pagination,
   SegmentedControl,
   Select,
-  Skeleton,
   Spinner,
   Textarea,
 } from "@/components/ui";
-import { cellKind, isTruncated, mutationSQL, prettyValue, quoteTable, type Dialect } from "@/lib/data-browser/cells";
+import {
+  cellKind,
+  isTruncated,
+  mutationSQL,
+  parseJsonDoc,
+  prettyValue,
+  quoteTable,
+  type Dialect,
+} from "@/lib/data-browser/cells";
 import {
   changeCount,
   emptyPending,
@@ -31,12 +48,43 @@ import {
   toMutations,
 } from "@/lib/data-browser/pending";
 import { load, save } from "@/lib/data-browser/storage";
-import { PAGE_SIZES, splitName, type Action, type OpenRequest, type Tab, type TableView } from "@/lib/data-browser/tabs";
-import { fkByColumn, followFilters, referencingFilters, type RowRecord } from "@/lib/data-browser/fk";
-import { describeValue, filterFor, fromDraft, opLabel, toDraft } from "@/lib/data-browser/filters";
+import {
+  PAGE_SIZES,
+  splitName,
+  type Action,
+  type OpenRequest,
+  type Tab,
+  type TableView,
+} from "@/lib/data-browser/tabs";
+import {
+  fkByColumn,
+  followFilters,
+  referencingFilters,
+  type RowRecord,
+} from "@/lib/data-browser/fk";
+import {
+  describeValue,
+  filterFor,
+  fromDraft,
+  opLabel,
+  toDraft,
+} from "@/lib/data-browser/filters";
 import { applySavedState } from "@/lib/data-browser/view-state";
-import { exportTableCSV, useTableViews, useApplyRowChanges, useBrowseRows, useForeignKeys, useReferencedBy } from "@/lib/hooks";
-import type { ForeignKey, RowFilter, SavedTableView, SortKey } from "@/lib/types";
+import {
+  exportTableCSV,
+  useTableViews,
+  useApplyRowChanges,
+  useBrowseRows,
+  useForeignKeys,
+  useReferencedBy,
+} from "@/lib/hooks";
+import type {
+  ForeignKey,
+  QueryResult,
+  RowFilter,
+  SavedTableView,
+  SortKey,
+} from "@/lib/types";
 import {
   ClipboardCopy,
   Download,
@@ -44,6 +92,7 @@ import {
   Lock,
   History,
   PanelRight,
+  ListOrdered,
   Rows2,
   Rows3,
   Plus,
@@ -61,7 +110,9 @@ import { RowHistory, useRowUndo } from "./row-history";
 import { ColumnsMenu } from "./columns-menu";
 import { ViewsMenu } from "./views-menu";
 import { RowPanel } from "./row-panel";
-
+import { GridSkeleton } from "./skeleton";
+import { CommandPanel } from "./command-panel";
+import { ResultGrid } from "./result-grid";
 
 /**
  * TableTab is one open table or view: its rows in an editable grid with
@@ -75,6 +126,7 @@ export function TableTab({
   canWrite,
   canBackup,
   dialect,
+  engine,
   dispatch,
   onDirty,
   onOpen,
@@ -88,6 +140,8 @@ export function TableTab({
   canWrite: boolean;
   canBackup: boolean;
   dialect: Dialect;
+  /** Engine of the database, for the command panel's editor. */
+  engine?: string;
   dispatch: Dispatch<Action>;
   onDirty: (id: string, changes: number) => void;
   onOpen: (req: OpenRequest) => void;
@@ -101,7 +155,8 @@ export function TableTab({
   const { push } = useToast();
   const confirm = useConfirm();
   const setView = useCallback(
-    (patch: Partial<TableView>, pin = true) => dispatch({ type: "update", id: tab.id, view: patch, pin }),
+    (patch: Partial<TableView>, pin = true) =>
+      dispatch({ type: "update", id: tab.id, view: patch, pin }),
     [dispatch, tab.id],
   );
 
@@ -115,9 +170,20 @@ export function TableTab({
     if (!applySaved || !savedViews.isFetched) return;
     const v = savedViews.data?.find((x) => x.id === applySaved);
     if (v) applyView(v);
-    else push("error", "That saved view is gone, or it is not shared with you. Showing the whole table.");
+    else
+      push(
+        "error",
+        "That saved view is gone, or it is not shared with you. Showing the whole table.",
+      );
     onSavedApplied?.();
-  }, [applySaved, savedViews.isFetched, savedViews.data, applyView, push, onSavedApplied]);
+  }, [
+    applySaved,
+    savedViews.isFetched,
+    savedViews.data,
+    applyView,
+    push,
+    onSavedApplied,
+  ]);
 
   // ---- search (debounced into the tab state) ----
   const [searchInput, setSearchInput] = useState(view.search);
@@ -149,11 +215,24 @@ export function TableTab({
     }),
     [view.filters, view.sort, view.search, view.pageSize, view.page],
   );
-  const { data, isLoading, error, isFetching, refetch } = useBrowseRows(databaseId, tab.name, req);
-  const fkQuery = useForeignKeys(databaseId, tab.kind === "table" ? tab.name : "");
+  const { data, isLoading, error, isFetching, refetch } = useBrowseRows(
+    databaseId,
+    tab.name,
+    req,
+  );
+  const fkQuery = useForeignKeys(
+    databaseId,
+    tab.kind === "table" ? tab.name : "",
+  );
   const fks = useMemo(() => fkByColumn(fkQuery.data ?? []), [fkQuery.data]);
-  const incomingQuery = useReferencedBy(databaseId, tab.kind === "table" ? tab.name : "");
-  const incoming = useMemo(() => incomingQuery.data ?? [], [incomingQuery.data]);
+  const incomingQuery = useReferencedBy(
+    databaseId,
+    tab.kind === "table" ? tab.name : "",
+  );
+  const incoming = useMemo(
+    () => incomingQuery.data ?? [],
+    [incomingQuery.data],
+  );
 
   const { schema } = splitName(tab.name, dialect === "postgres");
   const quoted = quoteTable(tab.name, dialect, schema);
@@ -173,9 +252,16 @@ export function TableTab({
   const editable = canWrite && !isView && key.length > 0;
 
   const rows = useMemo<GridRow[]>(() => {
-    const out: GridRow[] = pending.inserts.map((r) => ({ kind: "new", id: r.id, values: r.values, error: pending.errors[r.id] }));
+    const out: GridRow[] = pending.inserts.map((r) => ({
+      kind: "new",
+      id: r.id,
+      values: r.values,
+      error: pending.errors[r.id],
+    }));
     (data?.rows ?? []).forEach((cells, index) => {
-      const rowId = key.length ? rowIdOf(key, keyOf(columns, key, cells)) : null;
+      const rowId = key.length
+        ? rowIdOf(key, keyOf(columns, key, cells))
+        : null;
       out.push({
         kind: "data",
         index,
@@ -220,7 +306,14 @@ export function TableTab({
     if (row.kind === "new") {
       pd({ type: "setNew", id: row.id, column: col.name, value });
     } else if (row.rowId !== null && value !== undefined) {
-      pd({ type: "set", rowId: row.rowId, key: keyOf(columns, key, row.cells), column: col.name, value, original: row.cells[c] });
+      pd({
+        type: "set",
+        rowId: row.rowId,
+        key: keyOf(columns, key, row.cells),
+        column: col.name,
+        value,
+        original: row.cells[c],
+      });
     }
   }
 
@@ -230,7 +323,8 @@ export function TableTab({
     for (const i of idx) {
       const row = rows[i];
       if (row?.kind === "new") pd({ type: "removeNew", id: row.id });
-      else if (row?.kind === "data" && row.rowId !== null) del.push({ rowId: row.rowId, key: keyOf(columns, key, row.cells) });
+      else if (row?.kind === "data" && row.rowId !== null)
+        del.push({ rowId: row.rowId, key: keyOf(columns, key, row.cells) });
     }
     if (del.length) pd({ type: "delete", rows: del });
     setSelected(new Set());
@@ -241,23 +335,41 @@ export function TableTab({
     pd({ type: "insert", columns });
     setSelected(new Set());
     // Start typing straight away in the first column that needs a value.
-    setEditRequest({ row: 0, col: Math.max(0, columns.findIndex((c) => !c.has_default)) });
+    setEditRequest({
+      row: 0,
+      col: Math.max(
+        0,
+        columns.findIndex((c) => !c.has_default),
+      ),
+    });
     if (view.mode !== "data") setView({ mode: "data" });
   }
 
-  const addFilter = (f: RowFilter) => setView({ filters: [...view.filters, f], page: 1 });
+  const addFilter = (f: RowFilter) =>
+    setView({ filters: [...view.filters, f], page: 1 });
 
-  function onSort(column: string, dir: "asc" | "desc" | "toggle" | "clear", additive: boolean) {
+  function onSort(
+    column: string,
+    dir: "asc" | "desc" | "toggle" | "clear",
+    additive: boolean,
+  ) {
     const cur = view.sort.find((s) => s.column === column);
     let next: SortKey[];
     if (dir === "clear") next = view.sort.filter((s) => s.column !== column);
-    else if (dir === "asc" || dir === "desc") next = [{ column, desc: dir === "desc" }];
+    else if (dir === "asc" || dir === "desc")
+      next = [{ column, desc: dir === "desc" }];
     else {
       // asc → desc → off
-      const nextKey: SortKey | null = !cur ? { column, desc: false } : !cur.desc ? { column, desc: true } : null;
+      const nextKey: SortKey | null = !cur
+        ? { column, desc: false }
+        : !cur.desc
+          ? { column, desc: true }
+          : null;
       if (additive) {
         next = cur
-          ? view.sort.flatMap((s) => (s.column === column ? (nextKey ? [nextKey] : []) : [s]))
+          ? view.sort.flatMap((s) =>
+              s.column === column ? (nextKey ? [nextKey] : []) : [s],
+            )
           : [...view.sort, nextKey!];
       } else {
         next = nextKey ? [nextKey] : [];
@@ -269,10 +381,17 @@ export function TableTab({
   function openFiltered(table: string, filters: RowFilter[] | null) {
     if (!filters) return;
     const { label } = splitName(table, dialect === "postgres");
-    onOpen({ kind: "table", name: table, label, view: { mode: "data", search: "", filters } });
+    onOpen({
+      kind: "table",
+      name: table,
+      label,
+      view: { mode: "data", search: "", filters },
+    });
   }
-  const follow = (fk: ForeignKey, row: RowRecord) => openFiltered(fk.ref_table, followFilters(fk, row));
-  const referencing = (fk: ForeignKey, row: RowRecord) => openFiltered(fk.table ?? "", referencingFilters(fk, row));
+  const follow = (fk: ForeignKey, row: RowRecord) =>
+    openFiltered(fk.ref_table, followFilters(fk, row));
+  const referencing = (fk: ForeignKey, row: RowRecord) =>
+    openFiltered(fk.table ?? "", referencingFilters(fk, row));
 
   const doSave = useCallback(async () => {
     const mutations = toMutations(pending);
@@ -287,7 +406,9 @@ export function TableTab({
         push(
           "success",
           `Saved ${results.length} change${results.length === 1 ? "" : "s"} to ${tab.label}`,
-          undoable ? { label: "Undo", onClick: () => void rowUndo.run({ batchId }) } : undefined,
+          undoable
+            ? { label: "Undo", onClick: () => void rowUndo.run({ batchId }) }
+            : undefined,
         );
       else
         push(
@@ -316,7 +437,11 @@ export function TableTab({
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && !e.altKey && e.key.toLowerCase() === "s") {
+      if (
+        (e.ctrlKey || e.metaKey) &&
+        !e.altKey &&
+        e.key.toLowerCase() === "s"
+      ) {
         e.preventDefault();
         void doSave();
       }
@@ -330,7 +455,13 @@ export function TableTab({
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (!e.altKey || e.ctrlKey || e.metaKey || (e.key !== "PageDown" && e.key !== "PageUp")) return;
+      if (
+        !e.altKey ||
+        e.ctrlKey ||
+        e.metaKey ||
+        (e.key !== "PageDown" && e.key !== "PageUp")
+      )
+        return;
       if (document.querySelector('[role="dialog"]')) return;
       const { page, more } = pageRef.current;
       if (e.key === "PageDown" && more) setView({ page: page + 1 });
@@ -350,7 +481,8 @@ export function TableTab({
   const openFilters = (focus?: number, add?: RowFilter) => {
     const draft = view.filters.map(toDraft);
     if (add) draft.push(add);
-    if (draft.length === 0) draft.push({ column: columns[0]?.name ?? "", op: "eq", value: "" });
+    if (draft.length === 0)
+      draft.push({ column: columns[0]?.name ?? "", op: "eq", value: "" });
     setDraftFilters(draft);
     setFilterFocus(add ? draft.length - 1 : focus);
     setShowFilters(true);
@@ -382,8 +514,51 @@ export function TableTab({
       save("density", next === "compact" ? null : next);
       return next;
     });
+  const [rowNumbers, setRowNumbers] = useState(
+    () => load("row-numbers") !== "0",
+  );
+  const toggleRowNumbers = () =>
+    setRowNumbers((v) => {
+      save("row-numbers", v ? "0" : null);
+      return !v;
+    });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  // The SQL command panel under the grid; its open state is remembered.
+  const [commandOpen, setCommandOpen] = useState(
+    () => load("command-panel") === "1",
+  );
+  // A command panel read's rows, shown in place of the table until dismissed.
+  const [commandResult, setCommandResult] = useState<{
+    sql: string;
+    result: QueryResult;
+  } | null>(null);
+  const toggleCommand = () =>
+    setCommandOpen((v) => {
+      if (v) setCommandResult(null);
+      save("command-panel", v ? null : "1");
+      return !v;
+    });
+
+  // Detect when the +Row group has wrapped below the rest of the toolbar.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarEndRef = useRef<HTMLDivElement>(null);
+  const [toolbarWrapped, setToolbarWrapped] = useState(false);
+  useLayoutEffect(() => {
+    const bar = toolbarRef.current;
+    const end = toolbarEndRef.current;
+    const first = bar?.firstElementChild;
+    if (!bar || !end || !first) return;
+    const check = () =>
+      setToolbarWrapped(
+        end.getBoundingClientRect().top >
+          first.getBoundingClientRect().bottom - 1,
+      );
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
 
   const readOnlyReason = isView
     ? "Views are read-only."
@@ -395,8 +570,12 @@ export function TableTab({
 
   const offset = (view.page - 1) * view.pageSize;
   const hasFullPage = (data?.rows.length ?? 0) === view.pageSize;
-  const knownPages = data && data.total > 0 ? Math.ceil(data.total / view.pageSize) : 0;
-  const pageCount = Math.max(knownPages, hasFullPage ? view.page + 1 : view.page);
+  const knownPages =
+    data && data.total > 0 ? Math.ceil(data.total / view.pageSize) : 0;
+  const pageCount = Math.max(
+    knownPages,
+    hasFullPage ? view.page + 1 : view.page,
+  );
   useEffect(() => {
     pageRef.current = { page: view.page, more: view.page < pageCount };
   });
@@ -411,7 +590,7 @@ export function TableTab({
 
   return (
     <div className="dbx-pane">
-      <div className="dbx-toolbar">
+      <div className="dbx-toolbar" ref={toolbarRef}>
         <SegmentedControl
           className="dbx-seg"
           label="View"
@@ -439,7 +618,11 @@ export function TableTab({
                 aria-label="Search rows"
               />
               {searchInput ? (
-                <button className="dbx-search-clear" onClick={() => setSearchInput("")} aria-label="Clear search">
+                <button
+                  className="dbx-search-clear"
+                  onClick={() => setSearchInput("")}
+                  aria-label="Clear search"
+                >
                   <X size={13} />
                 </button>
               ) : null}
@@ -449,7 +632,9 @@ export function TableTab({
               active={view.filters.length > 0}
               icon={<Filter size={14} aria-hidden />}
               aria-expanded={showFilters}
-              onClick={() => (showFilters ? setShowFilters(false) : openFilters())}
+              onClick={() =>
+                showFilters ? setShowFilters(false) : openFilters()
+              }
               disabled={columns.length === 0}
             >
               Filter{view.filters.length ? ` · ${view.filters.length}` : ""}
@@ -464,7 +649,18 @@ export function TableTab({
             <ColumnsMenu
               columns={columns}
               hidden={view.hidden ?? []}
-              onChange={(hidden) => setView({ hidden, frozen: Math.min(view.frozen ?? 0, columns.length - hidden.length - 1) }, false)}
+              onChange={(hidden) =>
+                setView(
+                  {
+                    hidden,
+                    frozen: Math.min(
+                      view.frozen ?? 0,
+                      columns.length - hidden.length - 1,
+                    ),
+                  },
+                  false,
+                )
+              }
             />
           </>
         ) : null}
@@ -513,49 +709,93 @@ export function TableTab({
             >
               <Rows3 size={15} aria-hidden />
             </IconButton>
-            {editable ? (
-              <Button size="sm" variant="primary" icon={<Plus size={14} aria-hidden />} onClick={addRow}>
-                Row
-              </Button>
-            ) : null}
+            <IconButton
+              noTooltip
+              label="Toggle command panel"
+              active={commandOpen}
+              onClick={toggleCommand}
+              title="Command panel: run SQL under the grid"
+              aria-pressed={commandOpen}
+            >
+              <SquareTerminal size={15} aria-hidden />
+            </IconButton>
           </>
         ) : null}
-        <Menu
-          label="More table actions"
-          items={[
-            {
-              label: "New query on this table",
-              icon: <SquareTerminal size={15} />,
-              onSelect: () => onNewQuery(`SELECT *\nFROM ${quoted}\nLIMIT 100;`),
-            },
-            {
-              label: filtered ? "Export matching rows (CSV)" : "Export all rows (CSV)",
-              icon: <Download size={15} />,
-              onSelect: () =>
-                void exportTableCSV(databaseId, tab.name, { filters: view.filters, sort: view.sort, search: view.search }).catch(
-                  (err: unknown) => push("error", err instanceof Error ? err.message : "Export failed"),
-                ),
-            },
-            { label: "Import CSV…", icon: <Upload size={15} />, hidden: !canWrite || isView, onSelect: () => setImportOpen(true) },
-            {
-              label: "Compare with a backup…",
-              icon: <ArchiveRestore size={15} />,
-              hidden: isView,
-              onSelect: () => setCompareOpen(true),
-            },
-            {
-              label: "Copy name",
-              icon: <ClipboardCopy size={15} />,
-              onSelect: () => void navigator.clipboard?.writeText(tab.name),
-            },
-            {
-              label: density === "compact" ? "Taller rows" : "Compact rows",
-              icon: <Rows2 size={15} />,
-              hidden: view.mode !== "data",
-              onSelect: toggleDensity,
-            },
-          ]}
-        />
+        {/* +Row and the overflow menu wrap together. When they land on a line of
+            their own they sit at the right edge, with the menu ahead of +Row. */}
+        <div
+          ref={toolbarEndRef}
+          className={`dbx-toolbar-end${toolbarWrapped ? " is-wrapped" : ""}`}
+        >
+          {view.mode === "data" && editable ? (
+            <Button
+              className="dbx-toolbar-add"
+              size="sm"
+              variant="primary"
+              icon={<Plus size={14} aria-hidden />}
+              onClick={addRow}
+            >
+              Row
+            </Button>
+          ) : null}
+          <Menu
+            label="More table actions"
+            items={[
+              {
+                label: "New query on this table",
+                icon: <SquareTerminal size={15} />,
+                onSelect: () =>
+                  onNewQuery(`SELECT *\nFROM ${quoted}\nLIMIT 100;`),
+              },
+              {
+                label: filtered
+                  ? "Export matching rows (CSV)"
+                  : "Export all rows (CSV)",
+                icon: <Download size={15} />,
+                onSelect: () =>
+                  void exportTableCSV(databaseId, tab.name, {
+                    filters: view.filters,
+                    sort: view.sort,
+                    search: view.search,
+                  }).catch((err: unknown) =>
+                    push(
+                      "error",
+                      err instanceof Error ? err.message : "Export failed",
+                    ),
+                  ),
+              },
+              {
+                label: "Import CSV…",
+                icon: <Upload size={15} />,
+                hidden: !canWrite || isView,
+                onSelect: () => setImportOpen(true),
+              },
+              {
+                label: "Compare with a backup…",
+                icon: <ArchiveRestore size={15} />,
+                hidden: isView,
+                onSelect: () => setCompareOpen(true),
+              },
+              {
+                label: "Copy name",
+                icon: <ClipboardCopy size={15} />,
+                onSelect: () => void navigator.clipboard?.writeText(tab.name),
+              },
+              {
+                label: density === "compact" ? "Taller rows" : "Compact rows",
+                icon: <Rows2 size={15} />,
+                hidden: view.mode !== "data",
+                onSelect: toggleDensity,
+              },
+              {
+                label: rowNumbers ? "Hide row numbers" : "Show row numbers",
+                icon: <ListOrdered size={15} />,
+                hidden: view.mode !== "data",
+                onSelect: toggleRowNumbers,
+              },
+            ]}
+          />
+        </div>
       </div>
 
       {view.mode === "data" && showFilters && columns.length ? (
@@ -568,7 +808,9 @@ export function TableTab({
             onApply={(e) => {
               e?.preventDefault();
               setView({
-                filters: draftFilters.map(fromDraft).filter((f): f is RowFilter => f !== null),
+                filters: draftFilters
+                  .map(fromDraft)
+                  .filter((f): f is RowFilter => f !== null),
                 page: 1,
               });
               setShowFilters(false);
@@ -581,35 +823,60 @@ export function TableTab({
         <div className="dbx-chips">
           {view.filters.map((f, i) => (
             <span key={i} className="dbx-chip">
-              <button type="button" className="dbx-chip-edit" onClick={() => openFilters(i)} title="Edit this filter">
+              <button
+                type="button"
+                className="dbx-chip-edit"
+                onClick={() => openFilters(i)}
+                title="Edit this filter"
+              >
                 <span className="font-medium">{f.column}</span> {opLabel(f.op)}
-                {describeValue(f) ? <span className="mono"> {describeValue(f)}</span> : null}
+                {describeValue(f) ? (
+                  <span className="mono"> {describeValue(f)}</span>
+                ) : null}
               </button>
               <button
                 aria-label="Remove filter"
-                onClick={() => setView({ filters: view.filters.filter((_, j) => j !== i), page: 1 })}
+                onClick={() =>
+                  setView({
+                    filters: view.filters.filter((_, j) => j !== i),
+                    page: 1,
+                  })
+                }
               >
                 <X size={11} />
               </button>
             </span>
           ))}
-          <Button variant="ghost" size="sm" onClick={() => setView({ filters: [], page: 1 })}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setView({ filters: [], page: 1 })}
+          >
             Clear filters
           </Button>
         </div>
       ) : null}
 
       {view.mode === "structure" ? (
-        <div className="dbx-structure">
+        <div className="dbx-structure-scroll">
           <SchemaView
             databaseId={databaseId}
             table={tab.name}
+            dialect={dialect}
             canWrite={canWrite && !isView}
             onTableGone={(renamed) => {
               if (renamed) {
                 // Renames keep the schema; the structure editor reports the bare new name.
-                const name = schema && !renamed.includes(".") ? `${schema}.${renamed}` : renamed;
-                dispatch({ type: "rename", id: tab.id, name, label: splitName(name, dialect === "postgres").label });
+                const name =
+                  schema && !renamed.includes(".")
+                    ? `${schema}.${renamed}`
+                    : renamed;
+                dispatch({
+                  type: "rename",
+                  id: tab.id,
+                  name,
+                  label: splitName(name, dialect === "postgres").label,
+                });
               } else {
                 dispatch({ type: "close", id: tab.id });
               }
@@ -619,7 +886,37 @@ export function TableTab({
       ) : (
         <div className="dbx-body">
           <div className="dbx-grid-wrap">
-            {isLoading ? (
+            {commandResult ? (
+              <>
+                <div className="dbx-cmd-result-bar" role="status">
+                  <SquareTerminal size={14} aria-hidden />
+                  <span className="font-medium text-sm">Query result</span>
+                  <span className="text-sm muted">
+                    {commandResult.result.row_count.toLocaleString()} row
+                    {commandResult.result.row_count === 1 ? "" : "s"} ·{" "}
+                    {commandResult.result.duration_ms} ms
+                    {commandResult.result.truncated
+                      ? " · stopped at the row limit; add a LIMIT"
+                      : ""}
+                  </span>
+                  <code
+                    className="dbx-cmd-result-sql text-sm muted hide-sm"
+                    title={commandResult.sql}
+                  >
+                    {commandResult.sql.replace(/\s+/g, " ")}
+                  </code>
+                  <div className="flex-1" />
+                  <Button size="sm" onClick={() => setCommandResult(null)}>
+                    Back to table
+                  </Button>
+                </div>
+                <ResultGrid
+                  key={commandResult.sql + commandResult.result.duration_ms}
+                  result={commandResult.result}
+                  dialect={dialect}
+                />
+              </>
+            ) : isLoading ? (
               <GridSkeleton />
             ) : error ? (
               <div className="dbx-center">
@@ -652,24 +949,47 @@ export function TableTab({
                 onEdit={onEdit}
                 onRevertCell={(r, c) => {
                   const row = rows[r];
-                  if (row?.kind === "data" && row.rowId) pd({ type: "revertCell", rowId: row.rowId, column: columns[c].name });
+                  if (row?.kind === "data" && row.rowId)
+                    pd({
+                      type: "revertCell",
+                      rowId: row.rowId,
+                      column: columns[c].name,
+                    });
                 }}
                 onDeleteRows={onDeleteRows}
                 onRestoreRows={(idx) =>
                   idx.forEach((i) => {
                     const row = rows[i];
-                    if (row?.kind === "data" && row.rowId) pd({ type: "undelete", rowId: row.rowId });
+                    if (row?.kind === "data" && row.rowId)
+                      pd({ type: "undelete", rowId: row.rowId });
                   })
                 }
                 onDuplicate={(r) => {
                   const row = rows[r];
                   if (!row) return;
                   pin();
-                  pd({ type: "duplicate", columns, key, row: columns.map((c, i) => cellState(row, c, i).value) });
-                  setEditRequest({ row: 0, col: Math.max(0, columns.findIndex((c) => key.includes(c.name) && !c.has_default)) });
+                  pd({
+                    type: "duplicate",
+                    columns,
+                    key,
+                    row: columns.map((c, i) => cellState(row, c, i).value),
+                  });
+                  setEditRequest({
+                    row: 0,
+                    col: Math.max(
+                      0,
+                      columns.findIndex(
+                        (c) => key.includes(c.name) && !c.has_default,
+                      ),
+                    ),
+                  });
                 }}
                 onFilterBy={(column, value) =>
-                  addFilter(value === null ? { column, op: "is_null" } : { column, op: "eq", value })
+                  addFilter(
+                    value === null
+                      ? { column, op: "is_null" }
+                      : { column, op: "eq", value },
+                  )
                 }
                 onFollow={follow}
                 incoming={incoming}
@@ -678,14 +998,20 @@ export function TableTab({
                 onEditRequestDone={clearEditRequest}
                 hidden={view.hidden}
                 frozen={view.frozen}
-                onHideColumn={(name) => setView({ hidden: [...(view.hidden ?? []), name] }, false)}
+                onHideColumn={(name) =>
+                  setView({ hidden: [...(view.hidden ?? []), name] }, false)
+                }
                 onFreeze={(frozen) => setView({ frozen }, false)}
                 onRowDetail={openRowPanel}
                 onFilterColumn={(name) => {
                   const c = columns.find((x) => x.name === name);
-                  openFilters(undefined, filterFor(name, c ? cellKind(c.type) === "text" : false));
+                  openFilters(
+                    undefined,
+                    filterFor(name, c ? cellKind(c.type) === "text" : false),
+                  );
                 }}
                 density={density}
+                rowNumbers={rowNumbers}
                 emptyText={
                   filtered
                     ? "No rows match the search or filters."
@@ -698,41 +1024,62 @@ export function TableTab({
               />
             )}
           </div>
-          {panel ? (
+          {panel && !commandResult ? (
             <ValuePanel
               row={cursor ? rows[cursor.row] : undefined}
               col={cursor ? columns[cursor.col] : undefined}
               ci={cursor?.col ?? -1}
               editable={
                 cursor && !columns[cursor.col]?.generated
-                  ? rows[cursor.row]?.kind === "new" || (editable && rows[cursor.row]?.kind === "data")
+                  ? rows[cursor.row]?.kind === "new" ||
+                    (editable && rows[cursor.row]?.kind === "data")
                   : false
               }
               onApply={(v) => cursor && onEdit(cursor.row, cursor.col, v)}
               onClose={togglePanel}
             />
           ) : null}
-          {side === "row" ? (
+          {side === "row" && !commandResult ? (
             <RowPanel
               row={cursor ? rows[cursor.row] : undefined}
               label={(() => {
                 const r = cursor ? rows[cursor.row] : undefined;
-                return !r ? "Row" : r.kind === "new" ? "New row" : `Row ${offset + r.index + 1}`;
+                return !r
+                  ? "Row"
+                  : r.kind === "new"
+                    ? "New row"
+                    : `Row ${offset + r.index + 1}`;
               })()}
               columns={columns}
               keyCols={key}
               editable={(() => {
                 const r = cursor ? rows[cursor.row] : undefined;
-                return r?.kind === "new" || (editable && r?.kind === "data" && !r.deleted);
+                return (
+                  r?.kind === "new" ||
+                  (editable && r?.kind === "data" && !r.deleted)
+                );
               })()}
               onApply={(ci, v) => cursor && onEdit(cursor.row, ci, v)}
-              onPrev={cursor && cursor.row > 0 ? () => setCursor({ row: cursor.row - 1, col: cursor.col }) : undefined}
-              onNext={cursor && cursor.row + 1 < rows.length ? () => setCursor({ row: cursor.row + 1, col: cursor.col }) : undefined}
+              onPrev={
+                cursor && cursor.row > 0
+                  ? () => setCursor({ row: cursor.row - 1, col: cursor.col })
+                  : undefined
+              }
+              onNext={
+                cursor && cursor.row + 1 < rows.length
+                  ? () => setCursor({ row: cursor.row + 1, col: cursor.col })
+                  : undefined
+              }
               onClose={toggleRowPanel}
             />
           ) : null}
           {historyOpen ? (
-            <RowHistory databaseId={databaseId} table={tab.name} canWrite={canWrite} onClose={() => setHistoryOpen(false)} />
+            <RowHistory
+              databaseId={databaseId}
+              table={tab.name}
+              canWrite={canWrite}
+              onClose={() => setHistoryOpen(false)}
+            />
           ) : null}
           {compareOpen ? (
             <BackupCompare
@@ -747,7 +1094,10 @@ export function TableTab({
       )}
 
       {view.mode === "data" && (count > 0 || saving) ? (
-        <div className={`dbx-commit${counts.failed ? " has-errors" : ""}`} role="status">
+        <div
+          className={`dbx-commit${counts.failed ? " has-errors" : ""}`}
+          role="status"
+        >
           <span className="dbx-commit-dot" />
           <span className="font-medium">
             {count} unsaved change{count === 1 ? "" : "s"}
@@ -760,31 +1110,74 @@ export function TableTab({
             ]
               .filter(Boolean)
               .join(" · ")}
-            {counts.failed ? <span className="text-danger"> · {counts.failed} failed</span> : null}
+            {counts.failed ? (
+              <span className="text-danger"> · {counts.failed} failed</span>
+            ) : null}
           </span>
           {counts.failed ? (
-            <span className="dbx-commit-error" title={Object.values(pending.errors).join("\n")}>
+            <span
+              className="dbx-commit-error"
+              title={Object.values(pending.errors).join("\n")}
+            >
               {Object.values(pending.errors)[0]}
             </span>
           ) : null}
           <div className="flex-1" />
-          <Button variant="ghost" size="sm" onClick={() => setReview(true)} disabled={saving}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => setReview(true)}
+            disabled={saving}
+          >
             Review SQL
           </Button>
           <Button size="sm" onClick={() => void discard()} disabled={saving}>
             Discard
           </Button>
-          <Button size="sm" variant="primary" loading={saving} onClick={() => void doSave()}>
+          <Button
+            size="sm"
+            variant="primary"
+            loading={saving}
+            onClick={() => void doSave()}
+          >
             Save <kbd className="dbx-kbd-primary hide-sm">Ctrl S</kbd>
           </Button>
         </div>
       ) : null}
 
+      {view.mode === "data" && commandOpen ? (
+        <CommandPanel
+          databaseId={databaseId}
+          table={tab.name}
+          quotedTable={quoted}
+          engine={engine}
+          canWrite={canWrite}
+          onResult={(sql, result) => setCommandResult({ sql, result })}
+          onWrote={() => {
+            setCommandResult(null);
+            void refetch();
+          }}
+          onClose={toggleCommand}
+        />
+      ) : null}
+
       {view.mode === "data" ? (
         <div className="dbx-footer">
           <span className="text-sm muted">
-            {data && data.rows.length > 0 ? <RowRange data={data} offset={offset} /> : data ? "No rows" : ""}
-            {selected.size > 1 ? ` · ${selected.size} selected` : ""}
+            {commandResult ? (
+              `Query result: ${commandResult.result.row_count.toLocaleString()} row${commandResult.result.row_count === 1 ? "" : "s"}`
+            ) : (
+              <>
+                {data && data.rows.length > 0 ? (
+                  <RowRange data={data} offset={offset} />
+                ) : data ? (
+                  "No rows"
+                ) : (
+                  ""
+                )}
+                {selected.size > 1 ? ` · ${selected.size} selected` : ""}
+              </>
+            )}
           </span>
           <div className="flex-1" />
           <label className="flex items-center gap-1 text-sm muted">
@@ -792,7 +1185,10 @@ export function TableTab({
             <Select
               className="dbx-pagesize"
               value={view.pageSize}
-              onChange={(e) => setView({ pageSize: Number(e.target.value), page: 1 })}
+              onChange={(e) => {
+                setCommandResult(null);
+                setView({ pageSize: Number(e.target.value), page: 1 });
+              }}
               aria-label="Rows per page"
             >
               {PAGE_SIZES.map((n) => (
@@ -806,16 +1202,25 @@ export function TableTab({
             page={view.page}
             pageCount={pageCount}
             hasMore={hasFullPage}
-            onPage={(page) => setView({ page })}
+            onPage={(page) => {
+              setCommandResult(null);
+              setView({ page });
+            }}
           />
         </div>
       ) : null}
 
       {review ? (
-        <Modal open wide onClose={() => setReview(false)} title={`Changes to ${tab.label}`}>
+        <Modal
+          open
+          wide
+          onClose={() => setReview(false)}
+          title={`Changes to ${tab.label}`}
+        >
           <p className="text-sm muted mt-0">
-            What saving will do, as SQL. Each row is applied on its own, in this order; if one fails, the others still
-            go through and the failed one stays here for you to fix.
+            What saving will do, as SQL. Each row is applied on its own, in this
+            order; if one fails, the others still go through and the failed one
+            stays here for you to fix.
           </p>
           <pre className="dbx-review">
             {toMutations(pending)
@@ -836,27 +1241,13 @@ export function TableTab({
           </div>
         </Modal>
       ) : null}
-      {importOpen ? <ImportCSV databaseId={databaseId} table={tab.name} onClose={() => setImportOpen(false)} /> : null}
-    </div>
-  );
-}
-
-/** GridSkeleton stands in for the grid while the first page of rows loads. */
-function GridSkeleton() {
-  return (
-    <div className="dbx-grid-skeleton" role="status" aria-label="Loading rows">
-      <div className="dbx-grid-skeleton-head" aria-hidden>
-        {[7, 10, 6, 9, 8].map((w, i) => (
-          <Skeleton key={i} width={`${w}rem`} height=".8rem" />
-        ))}
-      </div>
-      {Array.from({ length: 12 }, (_, r) => (
-        <div key={r} className="dbx-grid-skeleton-row" aria-hidden>
-          {[5, 9, 4, 7, 6].map((w, i) => (
-            <Skeleton key={i} width={`${w + ((r * 3 + i) % 4)}rem`} height=".7rem" />
-          ))}
-        </div>
-      ))}
+      {importOpen ? (
+        <ImportCSV
+          databaseId={databaseId}
+          table={tab.name}
+          onClose={() => setImportOpen(false)}
+        />
+      ) : null}
     </div>
   );
 }
@@ -879,7 +1270,8 @@ function ValuePanel({
 }) {
   const st = row && col ? cellState(row, col, ci) : null;
   const [draft, setDraft] = useState<string | null>(null);
-  const cellKey = row && col ? `${row.kind === "new" ? row.id : row.index}:${col.name}` : "";
+  const cellKey =
+    row && col ? `${row.kind === "new" ? row.id : row.index}:${col.name}` : "";
   const [prevKey, setPrevKey] = useState(cellKey);
   if (prevKey !== cellKey) {
     setPrevKey(cellKey);
@@ -888,12 +1280,15 @@ function ValuePanel({
   const { push } = useToast();
   const kind = col ? cellKind(col.type) : "text";
   const locked = st ? isTruncated(st.original) && !st.changed : false;
+  const jsonDoc = st ? parseJsonDoc(st.value) : undefined;
 
   return (
     <aside className="dbx-valuepanel" aria-label="Value panel">
       <div className="dbx-valuepanel-head">
         <span className="truncate font-medium">{col ? col.name : "Value"}</span>
-        {col ? <span className="muted text-xs truncate">{col.type}</span> : null}
+        {col ? (
+          <span className="muted text-xs truncate">{col.type}</span>
+        ) : null}
         <div className="flex-1" />
         <IconButton label="Close value panel" onClick={onClose}>
           <X size={14} aria-hidden />
@@ -935,8 +1330,12 @@ function ValuePanel({
             <Button size="sm" onClick={() => setDraft(null)}>
               Cancel
             </Button>
-            {kind === "json" ? (
-              <Button variant="ghost" size="sm" onClick={() => setDraft(prettyValue(draft, "json"))}>
+            {kind === "json" || parseJsonDoc(draft) ? (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setDraft(prettyValue(draft, "json"))}
+              >
                 Format JSON
               </Button>
             ) : null}
@@ -951,15 +1350,23 @@ function ValuePanel({
             <span className="dbx-pill">DEFAULT</span>
           ) : st.value === null ? (
             <span className="dbx-pill">NULL</span>
+          ) : jsonDoc ? (
+            <JsonViewer key={cellKey} doc={jsonDoc} />
           ) : (
-            <pre className="dbx-valuepanel-pre">{prettyValue(st.value, kind)}</pre>
+            <pre className="dbx-valuepanel-pre">
+              {prettyValue(st.value, kind)}
+            </pre>
           )}
           <div className="flex flex-wrap gap-2">
             {st.value !== null ? (
               <Button
                 size="sm"
                 icon={<ClipboardCopy size={13} aria-hidden />}
-                onClick={() => void navigator.clipboard?.writeText(st.value ?? "").then(() => push("success", "Copied value"))}
+                onClick={() =>
+                  void navigator.clipboard
+                    ?.writeText(st.value ?? "")
+                    .then(() => push("success", "Copied value"))
+                }
               >
                 Copy
               </Button>
@@ -977,11 +1384,15 @@ function ValuePanel({
           </div>
           {locked ? (
             <p className="muted text-xs m-0">
-              Shown cut short at 4 KB, so it can&apos;t be edited here. Use the SQL console.
+              Shown cut short at 4 KB, so it can&apos;t be edited here. Use the
+              SQL console.
             </p>
           ) : st.changed ? (
             <p className="text-xs m-0 text-warning">
-              Changed — was {st.original === null ? "NULL" : `“${st.original.slice(0, 80)}${st.original.length > 80 ? "…" : ""}”`}
+              Changed — was{" "}
+              {st.original === null
+                ? "NULL"
+                : `“${st.original.slice(0, 80)}${st.original.length > 80 ? "…" : ""}”`}
             </p>
           ) : null}
         </div>
