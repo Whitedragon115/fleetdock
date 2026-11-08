@@ -12,6 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **New logo.** The dashboard's sidebar, sign-in page, browser tab and
   home-screen icons use the new Fleetdock logo, in a light and a dark
   version. The full logo kit is in `brand/`.
+- **Thinner scrollbars that appear on hover**, in Chromium, Safari and
+  Firefox.
 
 ### Fixed
 
