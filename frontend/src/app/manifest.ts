@@ -7,8 +7,8 @@ export default function manifest(): MetadataRoute.Manifest {
     description: "Manage your databases, backups and servers",
     start_url: "/",
     display: "standalone",
-    background_color: "#09090b",
-    theme_color: "#0f766e",
+    background_color: "#1c1c1c",
+    theme_color: "#1c1c1c",
     icons: [
       { src: "/icon.svg", type: "image/svg+xml", sizes: "any" },
       { src: "/apple-icon", type: "image/png", sizes: "180x180" },
