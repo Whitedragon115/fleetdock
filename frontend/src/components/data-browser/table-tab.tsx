@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
 
 import { useConfirm } from "@/components/confirm";
 import { FilterEditor, ImportCSV, RowRange } from "./row-tools";
@@ -385,6 +385,22 @@ export function TableTab({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
 
+  // Detect when the +Row group has wrapped below the rest of the toolbar.
+  const toolbarRef = useRef<HTMLDivElement>(null);
+  const toolbarEndRef = useRef<HTMLDivElement>(null);
+  const [toolbarWrapped, setToolbarWrapped] = useState(false);
+  useLayoutEffect(() => {
+    const bar = toolbarRef.current;
+    const end = toolbarEndRef.current;
+    const first = bar?.firstElementChild;
+    if (!bar || !end || !first) return;
+    const check = () => setToolbarWrapped(end.getBoundingClientRect().top > first.getBoundingClientRect().bottom - 1);
+    check();
+    const ro = new ResizeObserver(check);
+    ro.observe(bar);
+    return () => ro.disconnect();
+  }, []);
+
   const readOnlyReason = isView
     ? "Views are read-only."
     : !canWrite
@@ -411,7 +427,7 @@ export function TableTab({
 
   return (
     <div className="dbx-pane">
-      <div className="dbx-toolbar">
+      <div className="dbx-toolbar" ref={toolbarRef}>
         <SegmentedControl
           className="dbx-seg"
           label="View"
@@ -513,49 +529,52 @@ export function TableTab({
             >
               <Rows3 size={15} aria-hidden />
             </IconButton>
-            {editable ? (
-              <Button size="sm" variant="primary" icon={<Plus size={14} aria-hidden />} onClick={addRow}>
-                Row
-              </Button>
-            ) : null}
           </>
         ) : null}
-        <Menu
-          label="More table actions"
-          items={[
-            {
-              label: "New query on this table",
-              icon: <SquareTerminal size={15} />,
-              onSelect: () => onNewQuery(`SELECT *\nFROM ${quoted}\nLIMIT 100;`),
-            },
-            {
-              label: filtered ? "Export matching rows (CSV)" : "Export all rows (CSV)",
-              icon: <Download size={15} />,
-              onSelect: () =>
-                void exportTableCSV(databaseId, tab.name, { filters: view.filters, sort: view.sort, search: view.search }).catch(
-                  (err: unknown) => push("error", err instanceof Error ? err.message : "Export failed"),
-                ),
-            },
-            { label: "Import CSV…", icon: <Upload size={15} />, hidden: !canWrite || isView, onSelect: () => setImportOpen(true) },
-            {
-              label: "Compare with a backup…",
-              icon: <ArchiveRestore size={15} />,
-              hidden: isView,
-              onSelect: () => setCompareOpen(true),
-            },
-            {
-              label: "Copy name",
-              icon: <ClipboardCopy size={15} />,
-              onSelect: () => void navigator.clipboard?.writeText(tab.name),
-            },
-            {
-              label: density === "compact" ? "Taller rows" : "Compact rows",
-              icon: <Rows2 size={15} />,
-              hidden: view.mode !== "data",
-              onSelect: toggleDensity,
-            },
-          ]}
-        />
+        {/* +Row and the menu wrap together, at the right edge. */}
+        <div ref={toolbarEndRef} className={`dbx-toolbar-end${toolbarWrapped ? " is-wrapped" : ""}`}>
+          {view.mode === "data" && editable ? (
+            <Button className="dbx-toolbar-add" size="sm" variant="primary" icon={<Plus size={14} aria-hidden />} onClick={addRow}>
+              Row
+            </Button>
+          ) : null}
+          <Menu
+            label="More table actions"
+            items={[
+              {
+                label: "New query on this table",
+                icon: <SquareTerminal size={15} />,
+                onSelect: () => onNewQuery(`SELECT *\nFROM ${quoted}\nLIMIT 100;`),
+              },
+              {
+                label: filtered ? "Export matching rows (CSV)" : "Export all rows (CSV)",
+                icon: <Download size={15} />,
+                onSelect: () =>
+                  void exportTableCSV(databaseId, tab.name, { filters: view.filters, sort: view.sort, search: view.search }).catch(
+                    (err: unknown) => push("error", err instanceof Error ? err.message : "Export failed"),
+                  ),
+              },
+              { label: "Import CSV…", icon: <Upload size={15} />, hidden: !canWrite || isView, onSelect: () => setImportOpen(true) },
+              {
+                label: "Compare with a backup…",
+                icon: <ArchiveRestore size={15} />,
+                hidden: isView,
+                onSelect: () => setCompareOpen(true),
+              },
+              {
+                label: "Copy name",
+                icon: <ClipboardCopy size={15} />,
+                onSelect: () => void navigator.clipboard?.writeText(tab.name),
+              },
+              {
+                label: density === "compact" ? "Taller rows" : "Compact rows",
+                icon: <Rows2 size={15} />,
+                hidden: view.mode !== "data",
+                onSelect: toggleDensity,
+              },
+            ]}
+          />
+        </div>
       </div>
 
       {view.mode === "data" && showFilters && columns.length ? (
