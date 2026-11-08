@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fleet insights on the overview.** Storage and capacity (database and
+  backup sizes, disk, memory, CPU, connections), backup coverage, a database
+  engine breakdown, the backups of the last 7 days, the largest databases
+  and the busiest servers. API: `GET /v1/overview` returns them; the named
+  lists only include what the caller may read.
+
 ### Changed
 
 - **New logo.** The dashboard's sidebar, sign-in page, browser tab and
