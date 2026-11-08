@@ -204,25 +204,39 @@
   .dbx-tree-schema {
     display: flex;
     align-items: center;
-    gap: 0.45rem;
+    gap: 0.5rem;
     width: 100%;
-    padding: 0.28rem 0.45rem;
+    /* Same item size as the app sidebar links (.sidebar-link). */
+    min-height: 1.9rem;
+    padding: 0.3rem 0.55rem;
     border: 0;
     background: none;
     color: var(--fg);
-    font-size: 0.84rem;
-    border-radius: var(--radius-sm);
+    font-size: var(--fs-base);
+    border-radius: var(--radius-md);
     cursor: pointer;
     text-align: left;
     line-height: 1.35;
     user-select: none;
+  }
+  .dbx-tree-item > svg,
+  .dbx-tree-schema > svg:not(.dbx-chevron) {
+    width: 16px;
+    height: 16px;
+  }
+  /* Touch: grow with .sidebar-link (components.css). */
+  @media (pointer: coarse) {
+    .dbx-tree-item,
+    .dbx-tree-schema {
+      min-height: 2.75rem;
+    }
   }
   .dbx-tree-item:hover,
   .dbx-tree-schema:hover {
     background: var(--panel-2);
   }
   .dbx-tree-item.nested {
-    padding-left: 1.6rem;
+    padding-left: calc(0.55rem + 13px + 0.5rem);
   }
   .dbx-tree-item.cursor {
     box-shadow: inset 0 0 0 1px
