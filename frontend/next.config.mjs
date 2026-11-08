@@ -23,6 +23,13 @@ const nextConfig = {
   output: "standalone",
   poweredByHeader: false,
 
+  // Development only: hosts other than localhost (e.g. a LAN IP) that may load
+  // dev assets and the HMR websocket. Comma-separated, e.g. "192.168.1.10".
+  allowedDevOrigins: (process.env.FLEETDOCK_DEV_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+
   // Old bookmarks and links keep working.
   async redirects() {
     return legacyRedirects.map(({ source, destination }) => ({ source, destination, permanent: true }));
