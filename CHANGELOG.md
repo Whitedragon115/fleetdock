@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in any column type, shows as a collapsible tree in the value and row
   panels, with a raw view. Editing such a cell opens the value panel with
   the JSON formatted and in the same colours, and a mark on invalid JSON.
+- **Page transitions.** Pages fade in with a slight rise when you move
+  between them (not with reduced motion).
 
 ### Changed
 
