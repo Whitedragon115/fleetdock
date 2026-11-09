@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `crypto.randomUUID()` on HTTPS or localhost.
 - **Ctrl/Cmd+Enter runs the query** in the SQL editor again; it was adding a
   new line instead.
+- **No horizontal scrollbar in the collapsed sidebar.**
 
 ## [0.10.0] - 2026-11-07
 
