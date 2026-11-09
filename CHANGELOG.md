@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Data browser: command panel.** Run SQL under a table's grid. A query's
   rows show in place of the table; a change is confirmed first with how many
   rows it affects, then the table reloads.
+- **Data browser: JSON as a tree.** A cell holding a JSON object or array,
+  in any column type, shows as a collapsible tree in the value and row
+  panels, with a raw view. Editing such a cell opens the value panel with
+  the JSON formatted and in the same colours, and a mark on invalid JSON.
 
 ### Changed
 
