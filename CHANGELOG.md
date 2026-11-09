@@ -30,6 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine breakdown, the backups of the last 7 days, the largest databases
   and the busiest servers. API: `GET /v1/overview` returns them; the named
   lists only include what the caller may read.
+- **Appearance settings.** Settings → Appearance chooses the theme (Light,
+  Dark or System), the style (Classic, or a compact gray Neutral style) and
+  a Borderless option. Saved in the browser and applied before the page
+  shows.
 
 ### Changed
 
