@@ -20,7 +20,9 @@ ADDR=127.0.0.1:18080
 BASE="http://$ADDR"
 PID=""
 cleanup() {
-  [ -n "$PID" ] && kill "$PID" 2>/dev/null || true
+  if [ -n "$PID" ]; then
+    kill "$PID" 2>/dev/null || true
+  fi
   git -C "$ROOT" worktree remove --force "$WORK/old" >/dev/null 2>&1 || true
   rm -rf "$WORK"
 }
