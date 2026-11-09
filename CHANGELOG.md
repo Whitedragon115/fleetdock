@@ -33,6 +33,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Ctrl/Cmd+Enter runs the query** in the SQL editor again; it was adding a
   new line instead.
 - **No horizontal scrollbar in the collapsed sidebar.**
+- **The account menu button no longer clips its avatar** when hovered.
 
 ## [0.10.0] - 2026-11-07
 
