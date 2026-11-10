@@ -605,49 +605,6 @@ export interface Overview {
   setup: { servers: number; instances: number; destinations: number; schedules: number; channels: number };
   /** Open problems the current user may see, critical first (at most 20). */
   attention: AttentionItem[];
-  /** Fleet-wide totals; disk is the latest snapshot of online servers. */
-  storage: {
-    database_bytes: number;
-    backup_bytes: number;
-    backups_stored: number;
-    disk_used_bytes: number;
-    disk_total_bytes: number;
-  };
-  resources: {
-    avg_cpu_pct: number | null;
-    mem_used_bytes: number;
-    mem_total_bytes: number;
-    active_connections: number;
-  };
-  /** Backup coverage of active, non-system databases. */
-  coverage: { databases: number; scheduled: number; backed_up_7d: number; verified: number };
-  engines: { engine: string; instances: number; databases: number; size_bytes: number }[];
-  /** One entry per UTC day for the last 7 days, oldest first. */
-  backup_days: { day: string; completed: number; failed: number; bytes: number }[];
-  /** Largest databases the caller may read (at most 6). */
-  largest_databases: {
-    id: string;
-    name: string;
-    instance_id: string;
-    instance_name: string;
-    engine: string;
-    size_bytes: number;
-    active_connections: number;
-  }[];
-  /** Servers the caller may read, unhealthy and busiest first (at most 6). */
-  server_loads: {
-    id: string;
-    name: string;
-    status: string;
-    cpu_pct?: number;
-    mem_used_bytes?: number;
-    mem_total_bytes?: number;
-    disk_used_bytes?: number;
-    disk_total_bytes?: number;
-    collected_at?: string;
-    instances: number;
-    databases: number;
-  }[];
 }
 
 export interface AttentionItem {
