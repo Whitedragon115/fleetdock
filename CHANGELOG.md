@@ -41,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Firefox. In the data browser the grid's scrollbars float over the table,
   so they take no space; they show on hover or while scrolling and can be
   dragged.
+- **Data browser: resize handles only change the cursor on hover.** The
+  panel and column handles no longer flash a highlight line as the pointer
+  crosses them; keyboard focus still highlights them.
 
 ### Fixed
 
