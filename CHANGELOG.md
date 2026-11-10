@@ -20,20 +20,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in any column type, shows as a collapsible tree in the value and row
   panels, with a raw view. Editing such a cell opens the value panel with
   the JSON formatted and in the same colours, and a mark on invalid JSON.
-- **Page transitions.** Pages fade in with a slight rise when you move
-  between them (not with reduced motion).
 - **Your name in the top bar.** The account menu shows your display name and
   its initials (your email on hover), falling back to the email. API: `GET
   /v1/me` returns `name`.
-- **Fleet insights on the overview.** Storage and capacity (database and
-  backup sizes, disk, memory, CPU, connections), backup coverage, a database
-  engine breakdown, the backups of the last 7 days, the largest databases
-  and the busiest servers. API: `GET /v1/overview` returns them; the named
-  lists only include what the caller may read.
 - **Appearance settings.** Settings → Appearance chooses the theme (Light,
   Dark or System), the style (Classic, or a compact gray Neutral style) and
   a Borderless option. Saved in the browser and applied before the page
   shows.
+- **Page transitions.** Pages fade in with a slight rise when you move
+  between them. Settings → Appearance → Animations chooses Full, Reduced (a
+  plain fade) or Off (no page or interface animations); the system's
+  reduce-motion setting always turns them off.
 
 ### Changed
 
@@ -46,6 +43,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Firefox. In the data browser the grid's scrollbars float over the table,
   so they take no space; they show on hover or while scrolling and can be
   dragged.
+- **Data browser: resize handles only change the cursor on hover.** The
+  panel and column handles no longer flash a highlight line as the pointer
+  crosses them; keyboard focus still highlights them.
 
 ### Fixed
 

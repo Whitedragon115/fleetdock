@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	agentapp "github.com/Fleetdock/fleetdock/backend/internal/app/agent"
-	authapp "github.com/Fleetdock/fleetdock/backend/internal/app/auth"
 	summaryapp "github.com/Fleetdock/fleetdock/backend/internal/app/summary"
 	authz "github.com/Fleetdock/fleetdock/backend/internal/domain/authz"
 	serverdom "github.com/Fleetdock/fleetdock/backend/internal/domain/server"
@@ -64,70 +63,6 @@ type overviewResponse struct {
 		Channels     int `json:"channels"`
 	} `json:"setup"`
 	Attention []attentionItem `json:"attention"`
-	// Storage, Resources and Insights are fleet-wide totals (like the counts
-	// above). LargestDatabases and ServerLoads name resources, so they only
-	// list what the caller may read.
-	Storage struct {
-		DatabaseBytes  int64 `json:"database_bytes"`
-		BackupBytes    int64 `json:"backup_bytes"`
-		BackupsStored  int   `json:"backups_stored"`
-		DiskUsedBytes  int64 `json:"disk_used_bytes"`
-		DiskTotalBytes int64 `json:"disk_total_bytes"`
-	} `json:"storage"`
-	Resources struct {
-		AvgCPUPct         *float64 `json:"avg_cpu_pct"`
-		MemUsedBytes      int64    `json:"mem_used_bytes"`
-		MemTotalBytes     int64    `json:"mem_total_bytes"`
-		ActiveConnections int      `json:"active_connections"`
-	} `json:"resources"`
-	Coverage struct {
-		Databases  int `json:"databases"`
-		Scheduled  int `json:"scheduled"`
-		BackedUp7d int `json:"backed_up_7d"`
-		Verified   int `json:"verified"`
-	} `json:"coverage"`
-	Engines          []engineStat   `json:"engines"`
-	BackupDays       []backupDay    `json:"backup_days"`
-	LargestDatabases []databaseSize `json:"largest_databases"`
-	ServerLoads      []serverLoad   `json:"server_loads"`
-}
-
-type engineStat struct {
-	Engine    string `json:"engine"`
-	Instances int    `json:"instances"`
-	Databases int    `json:"databases"`
-	SizeBytes int64  `json:"size_bytes"`
-}
-
-type backupDay struct {
-	Day       string `json:"day"` // YYYY-MM-DD (UTC)
-	Completed int    `json:"completed"`
-	Failed    int    `json:"failed"`
-	Bytes     int64  `json:"bytes"`
-}
-
-type databaseSize struct {
-	ID           uuid.UUID `json:"id"`
-	Name         string    `json:"name"`
-	InstanceID   uuid.UUID `json:"instance_id"`
-	InstanceName string    `json:"instance_name"`
-	Engine       string    `json:"engine"`
-	SizeBytes    int64     `json:"size_bytes"`
-	Connections  int       `json:"active_connections"`
-}
-
-type serverLoad struct {
-	ID             uuid.UUID  `json:"id"`
-	Name           string     `json:"name"`
-	Status         string     `json:"status"`
-	CPUPct         *float64   `json:"cpu_pct,omitempty"`
-	MemUsedBytes   *int64     `json:"mem_used_bytes,omitempty"`
-	MemTotalBytes  *int64     `json:"mem_total_bytes,omitempty"`
-	DiskUsedBytes  *int64     `json:"disk_used_bytes,omitempty"`
-	DiskTotalBytes *int64     `json:"disk_total_bytes,omitempty"`
-	CollectedAt    *time.Time `json:"collected_at,omitempty"`
-	Instances      int        `json:"instances"`
-	Databases      int        `json:"databases"`
 }
 
 type attentionItem struct {
@@ -144,13 +79,6 @@ type attentionItem struct {
 // that items the caller may not see can be dropped without starving the list.
 const maxAttention = 20
 
-// maxLargestDatabases and maxServerLoads bound the named insight lists; like
-// attention, the repository is asked for more to leave room for filtering.
-const (
-	maxLargestDatabases = 6
-	maxServerLoads      = 6
-)
-
 func toOverviewResponse(s statsdom.Summary) overviewResponse {
 	var out overviewResponse
 	out.Servers.Total, out.Servers.Online, out.Servers.Offline = s.ServersTotal, s.ServersOnline, s.ServersOffline
@@ -162,28 +90,7 @@ func toOverviewResponse(s statsdom.Summary) overviewResponse {
 	out.Setup.Servers, out.Setup.Instances, out.Setup.Destinations = s.ServersTotal, s.InstancesTotal, s.DestinationsTotal
 	out.Setup.Schedules, out.Setup.Channels = s.SchedulesEnabled, s.ChannelsEnabled
 	out.Attention = []attentionItem{}
-	out.Engines = []engineStat{}
-	out.BackupDays = []backupDay{}
-	out.LargestDatabases = []databaseSize{}
-	out.ServerLoads = []serverLoad{}
 	return out
-}
-
-func applyInsights(out *overviewResponse, in statsdom.Insights) {
-	out.Storage.DatabaseBytes, out.Storage.BackupBytes, out.Storage.BackupsStored = in.DatabaseBytes, in.BackupBytes, in.BackupsStored
-	out.Storage.DiskUsedBytes, out.Storage.DiskTotalBytes = in.DiskUsedBytes, in.DiskTotalBytes
-	out.Resources.AvgCPUPct, out.Resources.ActiveConnections = in.AvgCPUPct, in.ActiveConnections
-	out.Resources.MemUsedBytes, out.Resources.MemTotalBytes = in.MemUsedBytes, in.MemTotalBytes
-	out.Coverage.Databases, out.Coverage.Scheduled = in.CoverageDatabases, in.CoverageScheduled
-	out.Coverage.BackedUp7d, out.Coverage.Verified = in.CoverageBackedUp7d, in.CoverageVerified
-	for _, e := range in.Engines {
-		out.Engines = append(out.Engines, engineStat(e))
-	}
-	for _, d := range in.BackupDays {
-		out.BackupDays = append(out.BackupDays, backupDay{
-			Day: d.Day.UTC().Format(time.DateOnly), Completed: d.Completed, Failed: d.Failed, Bytes: d.Bytes,
-		})
-	}
 }
 
 // Overview handles GET /v1/overview.
@@ -200,10 +107,6 @@ func (h *OverviewHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := principalFrom(r.Context())
-	if err := h.addInsights(r, p, &out); err != nil {
-		writeError(w, err)
-		return
-	}
 	for _, a := range items {
 		if len(out.Attention) == maxAttention {
 			break
@@ -217,53 +120,6 @@ func (h *OverviewHandler) Overview(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
-}
-
-// addInsights fills the storage/capacity totals and the named lists the
-// principal may read.
-func (h *OverviewHandler) addInsights(r *http.Request, p *authapp.Principal, out *overviewResponse) error {
-	ctx := r.Context()
-	in, err := h.summary.Insights(ctx)
-	if err != nil {
-		return err
-	}
-	applyInsights(out, in)
-
-	if p.CanAny("database:read") {
-		dbs, err := h.summary.LargestDatabases(ctx, 5*maxLargestDatabases)
-		if err != nil {
-			return err
-		}
-		for _, d := range dbs {
-			if len(out.LargestDatabases) == maxLargestDatabases {
-				break
-			}
-			if !p.CanOn("database:read", attentionAncestry(statsdom.Attention{ServerID: d.ServerID, DatabaseID: d.ID})) {
-				continue
-			}
-			out.LargestDatabases = append(out.LargestDatabases, databaseSize{
-				ID: d.ID, Name: d.Name, InstanceID: d.InstanceID, InstanceName: d.InstanceName,
-				Engine: d.Engine, SizeBytes: d.SizeBytes, Connections: d.Connections,
-			})
-		}
-	}
-
-	if p.CanAny("server:read") {
-		servers, err := h.summary.ServerLoads(ctx, 5*maxServerLoads)
-		if err != nil {
-			return err
-		}
-		for _, s := range servers {
-			if len(out.ServerLoads) == maxServerLoads {
-				break
-			}
-			if !p.CanOn("server:read", attentionAncestry(statsdom.Attention{ServerID: s.ID})) {
-				continue
-			}
-			out.ServerLoads = append(out.ServerLoads, serverLoad(s))
-		}
-	}
-	return nil
 }
 
 // attentionAncestry mirrors authzapp.Resolver for an attention item, from the

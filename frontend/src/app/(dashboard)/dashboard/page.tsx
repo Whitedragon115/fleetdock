@@ -5,13 +5,6 @@ import Link from "next/link";
 import { Activity, Archive, ArrowRight, Database, History, Server } from "lucide-react";
 
 import { AttentionList } from "@/components/overview/attention-list";
-import {
-  BackupTrendCard,
-  DataInsightsCard,
-  LargestDatabasesCard,
-  ServerHealthCard,
-  StorageCard,
-} from "@/components/overview/insights";
 import { SetupChecklist } from "@/components/overview/setup-checklist";
 import { Badge, Card, CardHeader, PageHeader, PageSkeleton, QueryError, Skeleton, StatTile, StatusBadge, Time } from "@/components/ui";
 import { useCanAny, useOperations, useOverview } from "@/lib/hooks";
@@ -104,26 +97,6 @@ export default function DashboardPage() {
         </section>
         {canAny("operation:read") ? <RecentActivity /> : null}
       </div>
-
-      {/* An API from before insights existed omits these fields; skip the section rather than crash. */}
-      {data.storage ? (
-        <section aria-labelledby="insights-title" className="overview-section">
-          <h2 id="insights-title" className="section-title">
-            Fleet insights
-          </h2>
-          <div className="insight-grid">
-            <StorageCard data={data} />
-            <DataInsightsCard data={data} />
-            <BackupTrendCard days={data.backup_days} />
-          </div>
-          {canAny("database:read") || canAny("server:read") ? (
-            <div className="insight-grid">
-              {canAny("database:read") ? <LargestDatabasesCard items={data.largest_databases} /> : null}
-              {canAny("server:read") ? <ServerHealthCard items={data.server_loads} total={data.servers.total} /> : null}
-            </div>
-          ) : null}
-        </section>
-      ) : null}
     </div>
   );
 }

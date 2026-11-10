@@ -19,17 +19,6 @@ import (
 type fakeStats struct {
 	summary   statsdom.Summary
 	attention []statsdom.Attention
-	insights  statsdom.Insights
-	databases []statsdom.DatabaseSize
-	servers   []statsdom.ServerLoad
-}
-
-func (f fakeStats) Insights(context.Context) (statsdom.Insights, error) { return f.insights, nil }
-func (f fakeStats) LargestDatabases(_ context.Context, limit int) ([]statsdom.DatabaseSize, error) {
-	return f.databases[:min(limit, len(f.databases))], nil
-}
-func (f fakeStats) ServerLoads(_ context.Context, limit int) ([]statsdom.ServerLoad, error) {
-	return f.servers[:min(limit, len(f.servers))], nil
 }
 
 func (f fakeStats) Summary(context.Context) (statsdom.Summary, error) { return f.summary, nil }
@@ -103,56 +92,5 @@ func TestOverviewAttentionIsCapped(t *testing.T) {
 	admin := authapp.NewPrincipal(uuid.New(), "b@example.com", "database:read")
 	if got := getOverview(t, fakeStats{attention: many}, admin); len(got.Attention) != maxAttention {
 		t.Errorf("got %d items, want %d", len(got.Attention), maxAttention)
-	}
-}
-
-func TestOverviewInsightsAreFilteredByScope(t *testing.T) {
-	mine, other := uuid.New(), uuid.New()
-	myDB := uuid.New()
-	cpu := 42.5
-	repo := fakeStats{
-		insights: statsdom.Insights{
-			DatabaseBytes: 3 << 30, BackupBytes: 1 << 30, BackupsStored: 4, AvgCPUPct: &cpu,
-			CoverageDatabases: 3, CoverageScheduled: 2,
-			Engines:    []statsdom.EngineStat{{Engine: "postgres", Instances: 1, Databases: 3, SizeBytes: 3 << 30}},
-			BackupDays: []statsdom.BackupDay{{Day: time.Date(2026, 11, 8, 0, 0, 0, 0, time.UTC), Completed: 2, Failed: 1}},
-		},
-		databases: []statsdom.DatabaseSize{
-			{ID: uuid.New(), Name: "big-theirs", ServerID: other, SizeBytes: 2 << 30},
-			{ID: myDB, Name: "orders", ServerID: other, SizeBytes: 1 << 30},
-			{ID: uuid.New(), Name: "external"}, // no server: global grant only
-		},
-		servers: []statsdom.ServerLoad{
-			{ID: other, Name: "theirs", Status: "online"},
-			{ID: mine, Name: "mine", Status: "online", CPUPct: &cpu},
-		},
-	}
-
-	scoped := authapp.NewPrincipalWithGrants(uuid.New(), "a@example.com", []authz.Grant{
-		{Permission: "database:read", Scope: authz.Scope{Type: authz.ScopeDatabase, ID: myDB}},
-		{Permission: "server:read", Scope: authz.Scope{Type: authz.ScopeServer, ID: mine}},
-	})
-	out := getOverview(t, repo, scoped)
-	if len(out.LargestDatabases) != 1 || out.LargestDatabases[0].Name != "orders" {
-		t.Errorf("databases = %+v, want only orders", out.LargestDatabases)
-	}
-	if len(out.ServerLoads) != 1 || out.ServerLoads[0].Name != "mine" || *out.ServerLoads[0].CPUPct != cpu {
-		t.Errorf("servers = %+v, want only mine", out.ServerLoads)
-	}
-	if out.Storage.DatabaseBytes != 3<<30 || out.Storage.BackupsStored != 4 || out.Coverage.Scheduled != 2 {
-		t.Errorf("totals = %+v / %+v", out.Storage, out.Coverage)
-	}
-	if len(out.BackupDays) != 1 || out.BackupDays[0].Day != "2026-11-08" || out.BackupDays[0].Failed != 1 {
-		t.Errorf("backup days = %+v", out.BackupDays)
-	}
-
-	admin := authapp.NewPrincipal(uuid.New(), "b@example.com", "server:read", "database:read")
-	if got := getOverview(t, repo, admin); len(got.LargestDatabases) != 3 || len(got.ServerLoads) != 2 {
-		t.Errorf("admin sees %d databases / %d servers, want 3 / 2", len(got.LargestDatabases), len(got.ServerLoads))
-	}
-
-	nobody := getOverview(t, repo, authapp.NewPrincipal(uuid.New(), "c@example.com"))
-	if nobody.LargestDatabases == nil || len(nobody.LargestDatabases) != 0 || len(nobody.ServerLoads) != 0 {
-		t.Errorf("nobody sees %+v / %+v", nobody.LargestDatabases, nobody.ServerLoads)
 	}
 }
