@@ -481,10 +481,7 @@ EOF
     old_list="$(getenv FLEETDOCK_ENCRYPTION_KEYS_OLD)"
     new_id="key-${stamp}"
     new_key="$(openssl rand -base64 32 | tr -d '\n')"
-    if [ -z "$old_key" ] || [ -z "$new_key" ]; then
-      echo "error: could not read the current key or make a new one (is openssl installed?)" >&2
-      exit 1
-    fi
+    [ -n "$old_key" ] && [ -n "$new_key" ] || { echo "error: could not read the current key or make a new one (is openssl installed?)" >&2; exit 1; }
     restore_env() {
       cp -p "${FLEETDOCK_DIR}/backups/env-before-rotate-${stamp}" "$ENV_FILE"
       dc up -d >/dev/null 2>&1 || true
