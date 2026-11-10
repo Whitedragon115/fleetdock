@@ -75,6 +75,13 @@ export default function DashboardLayout({ children }: { children: ReactNode }) {
       {chromeHidden ? null : <Sidebar open={navOpen} onClose={closeNav} />}
       <div className="app-column">
         {chromeHidden ? null : <Topbar onOpenNav={() => setNavOpen(true)} />}
+        {me.data.demo && !chromeHidden ? (
+          <div className="demo-banner" role="note">
+            <strong>Public demo.</strong> Everyone shares this sandbox and its
+            data is reset regularly, so don&apos;t enter anything private.
+            Administration is turned off.
+          </div>
+        ) : null}
         <main
           id="main"
           // The Data Browser and the diagram are full-bleed workspaces with

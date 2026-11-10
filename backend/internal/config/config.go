@@ -136,6 +136,31 @@ type Config struct {
 	// production (inside the container loopback is the control plane itself);
 	// on by default in development, where the database often is on localhost.
 	AllowLoopbackDBHosts bool
+
+	// Demo turns the control plane into a public, read-and-play demo (see
+	// internal/app/demo): visitors are signed in automatically as one shared
+	// account, the API is limited to an allowlist of data-browsing and SQL
+	// console routes, and the only database server is a disposable sandbox.
+	Demo Demo
+}
+
+// Demo configures public demo mode (FLEETDOCK_DEMO_*).
+type Demo struct {
+	Enabled bool
+	// Email of the shared visitor account (created on start).
+	Email string
+	// Sandbox is the disposable database server visitors work on (mysql,
+	// mariadb or postgres). Its login creates Fleetdock's per-database
+	// console accounts, so it needs to manage accounts, but it should hold
+	// nothing beyond that and the demo databases (no superuser, no FILE).
+	SandboxEngine   string
+	SandboxHost     string
+	SandboxPort     int
+	SandboxUser     string
+	SandboxPassword string
+	// CleanupAge is how long visitors' query history, saved queries and table
+	// views are kept before they are deleted.
+	CleanupAge time.Duration
 }
 
 // minSecretLen is the shortest JWT secret / encryption key accepted in
@@ -296,6 +321,36 @@ func Load() (Config, error) {
 		GatewaySourceIPMode: getenv("FLEETDOCK_GATEWAY_SOURCE_IP_MODE", gateway.SourceIPDirect),
 	}
 	cfg.AllowLoopbackDBHosts = getenvBool("FLEETDOCK_ALLOW_LOOPBACK_DB_HOSTS", !cfg.IsProduction())
+	cfg.Demo = Demo{
+		Enabled:         getenvBool("FLEETDOCK_DEMO_MODE", false),
+		Email:           getenv("FLEETDOCK_DEMO_EMAIL", "demo@fleetdock.local"),
+		SandboxEngine:   getenv("FLEETDOCK_DEMO_SANDBOX_ENGINE", "mysql"),
+		SandboxHost:     os.Getenv("FLEETDOCK_DEMO_SANDBOX_HOST"),
+		SandboxPort:     getenvInt("FLEETDOCK_DEMO_SANDBOX_PORT", 0),
+		SandboxUser:     getenv("FLEETDOCK_DEMO_SANDBOX_USER", "fleetdock_admin"),
+		SandboxPassword: os.Getenv("FLEETDOCK_DEMO_SANDBOX_PASSWORD"),
+		CleanupAge:      getenvDuration("FLEETDOCK_DEMO_CLEANUP_AGE", time.Hour),
+	}
+	if cfg.Demo.Enabled {
+		if cfg.Demo.SandboxHost == "" || cfg.Demo.SandboxPassword == "" {
+			return Config{}, fmt.Errorf("config: FLEETDOCK_DEMO_SANDBOX_HOST and FLEETDOCK_DEMO_SANDBOX_PASSWORD are required in demo mode")
+		}
+		if cfg.GatewayEnabled {
+			return Config{}, fmt.Errorf("config: the gateway cannot be enabled in demo mode")
+		}
+		switch cfg.Demo.SandboxEngine {
+		case "mysql", "mariadb":
+			if cfg.Demo.SandboxPort == 0 {
+				cfg.Demo.SandboxPort = 3306
+			}
+		case "postgres":
+			if cfg.Demo.SandboxPort == 0 {
+				cfg.Demo.SandboxPort = 5432
+			}
+		default:
+			return Config{}, fmt.Errorf("config: FLEETDOCK_DEMO_SANDBOX_ENGINE must be mysql, mariadb or postgres")
+		}
+	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, fmt.Errorf("config: FLEETDOCK_DATABASE_URL is required")
 	}

@@ -1,0 +1,210 @@
+# Fleetdock public demo: anyone who opens the site is signed in as a shared
+# visitor and can browse, edit and query sample MySQL databases.
+#
+#   cd deploy/public-demo
+#   cp .env.example .env    # then fill it in (see README.md)
+#   docker compose up --build -d
+#
+# Built from this checkout. What keeps it safe to publish:
+#   - FLEETDOCK_DEMO_MODE: automatic visitor sign-in, password sign-in off,
+#     the API limited to data routes, per-IP rate limits (see README.md);
+#   - the sandbox MySQL sits on an internal network with no route to the
+#     internet or to Fleetdock's own metadata database, runs from a size-capped
+#     tmpfs with CPU/memory limits, and is restored from templates regularly;
+#   - only Caddy publishes ports (80/443).
+#
+# Requires Docker Compose >= 2.23.
+name: fleetdock-public-demo
+
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "${FLEETDOCK_HTTP_BIND:-80}:80"
+      - "${FLEETDOCK_HTTPS_BIND:-443}:443"
+      - "${FLEETDOCK_HTTPS_BIND:-443}:443/udp"
+    environment:
+      FLEETDOCK_SITE_ADDRESS: ${FLEETDOCK_SITE_ADDRESS:?set FLEETDOCK_SITE_ADDRESS in .env}
+    configs:
+      - source: caddyfile
+        target: /etc/caddy/Caddyfile
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [edge]
+    depends_on:
+      fleetdock:
+        condition: service_healthy
+
+  fleetdock:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: fleetdock-public-demo:local
+    restart: unless-stopped
+    environment:
+      FLEETDOCK_HTTP_ADDR: ":8080"
+      FLEETDOCK_DATABASE_URL: postgres://fleetdock:${FLEETDOCK_POSTGRES_PASSWORD:?set FLEETDOCK_POSTGRES_PASSWORD in .env}@metadata:5432/fleetdock?sslmode=disable
+      FLEETDOCK_ENV: production
+      FLEETDOCK_JWT_SECRET: ${FLEETDOCK_JWT_SECRET:?set FLEETDOCK_JWT_SECRET in .env}
+      FLEETDOCK_ENCRYPTION_KEY: ${FLEETDOCK_ENCRYPTION_KEY:?set FLEETDOCK_ENCRYPTION_KEY in .env}
+      # The admin account exists but cannot be used: demo mode turns password
+      # sign-in off. Still set a strong, unshared password.
+      FLEETDOCK_ADMIN_EMAIL: ${FLEETDOCK_ADMIN_EMAIL:-admin@example.com}
+      FLEETDOCK_ADMIN_PASSWORD: ${FLEETDOCK_ADMIN_PASSWORD:?set FLEETDOCK_ADMIN_PASSWORD in .env}
+      FLEETDOCK_PUBLIC_URL: ${FLEETDOCK_PUBLIC_URL:?set FLEETDOCK_PUBLIC_URL in .env}
+      FLEETDOCK_CORS_ORIGIN: ${FLEETDOCK_PUBLIC_URL}
+      FLEETDOCK_TRUST_PROXY_HEADERS: "true"
+      FLEETDOCK_WORKER_ENABLED: "true"
+      FLEETDOCK_GATEWAY_ENABLED: "false"
+      # Visitors leave little behind: short journals and logs.
+      FLEETDOCK_ROW_CHANGE_RETENTION: 2h
+      FLEETDOCK_AUDIT_RETENTION: 72h
+      FLEETDOCK_FLEET_RUN_RETENTION: 24h
+      FLEETDOCK_JWT_TTL: 12h
+      # Demo mode.
+      FLEETDOCK_DEMO_MODE: "true"
+      FLEETDOCK_DEMO_SANDBOX_ENGINE: mysql
+      FLEETDOCK_DEMO_SANDBOX_HOST: sandbox
+      FLEETDOCK_DEMO_SANDBOX_PORT: "3306"
+      FLEETDOCK_DEMO_SANDBOX_USER: fleetdock_admin
+      FLEETDOCK_DEMO_SANDBOX_PASSWORD: ${SANDBOX_ADMIN_PASSWORD:?set SANDBOX_ADMIN_PASSWORD in .env}
+      FLEETDOCK_DEMO_CLEANUP_AGE: ${DEMO_CLEANUP_AGE:-1h}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/readyz"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 60s
+    mem_limit: 1g
+    pids_limit: 512
+    networks: [edge, meta, sandbox]
+    depends_on:
+      metadata:
+        condition: service_healthy
+      sandbox:
+        condition: service_healthy
+
+  # Fleetdock's own database. Reachable from the fleetdock container only.
+  metadata:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: fleetdock
+      POSTGRES_PASSWORD: ${FLEETDOCK_POSTGRES_PASSWORD}
+      POSTGRES_DB: fleetdock
+    volumes:
+      - metadata_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fleetdock -d fleetdock"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks: [meta]
+
+  # The database server visitors play with (MySQL 8.4 LTS). Disposable: its
+  # data lives in a tmpfs, so a restart brings back a fresh copy.
+  sandbox:
+    image: mysql:8.4
+    restart: unless-stopped
+    command:
+      - --skip-name-resolve
+      - --mysqlx=OFF
+      - --performance-schema=OFF
+      # No file access from SQL, in either direction.
+      - --local-infile=OFF
+      - --secure-file-priv=NULL
+      - --event-scheduler=OFF
+      # Connections: all visitors share Fleetdock's two accounts per database.
+      - --max-connections=60
+      - --max-user-connections=20
+      - --wait-timeout=120
+      - --interactive-timeout=120
+      # Memory and disk.
+      - --innodb-buffer-pool-size=128M
+      - --innodb-redo-log-capacity=64M
+      - --tmp-table-size=32M
+      - --max-heap-table-size=32M
+      - --max-allowed-packet=16M
+      - --disable-log-bin
+      # A default for SELECTs (visitors may lower it); sandbox-reset ends any
+      # statement that runs too long.
+      - --max-execution-time=30000
+      # Throwaway data on a tmpfs: no O_DIRECT, no durability.
+      - --innodb-flush-method=fsync
+      - --innodb-use-native-aio=OFF
+      - --innodb-flush-log-at-trx-commit=0
+      - --innodb-doublewrite=OFF
+    environment:
+      MYSQL_ROOT_PASSWORD: ${SANDBOX_SUPERUSER_PASSWORD:?set SANDBOX_SUPERUSER_PASSWORD in .env}
+      SANDBOX_ADMIN_PASSWORD: ${SANDBOX_ADMIN_PASSWORD}
+      DEMO_DATABASES: shop analytics billing
+      SEED_DIR: /sandbox/seed
+    volumes:
+      - ./sandbox/init:/docker-entrypoint-initdb.d:ro
+      - ./sandbox/seed:/sandbox/seed:ro
+    tmpfs:
+      - /var/lib/mysql:size=768m,mode=0750
+      - /tmp:size=256m
+    mem_limit: 1536m
+    cpus: 1.0
+    pids_limit: 300
+    healthcheck:
+      # TCP, not the socket: the init server runs without networking, so this
+      # turns healthy once seeding has finished.
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysql -h 127.0.0.1 -uroot -N -e \"SELECT 1 FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'billing'\" | grep -q 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+      start_period: 60s
+    networks: [sandbox]
+
+  sandbox-reset:
+    image: mysql:8.4
+    restart: unless-stopped
+    entrypoint: ["/bin/bash", "/sandbox/reset.sh"]
+    environment:
+      MYSQL_HOST: sandbox
+      MYSQL_PWD: ${SANDBOX_SUPERUSER_PASSWORD}
+      SANDBOX_MYSQL: mysql -uroot
+      DEMO_DATABASES: shop analytics billing
+      SEED_DIR: /sandbox/seed
+      DEMO_RESET_INTERVAL_SECONDS: ${DEMO_RESET_INTERVAL_SECONDS:-3600}
+      DEMO_MAX_QUERY_SECONDS: "45"
+    volumes:
+      - ./sandbox/reset.sh:/sandbox/reset.sh:ro
+      - ./sandbox/seed:/sandbox/seed:ro
+    mem_limit: 256m
+    networks: [sandbox]
+    depends_on:
+      sandbox:
+        condition: service_healthy
+
+networks:
+  # Caddy <-> Fleetdock, and the internet (Let's Encrypt).
+  edge: {}
+  # Fleetdock <-> its metadata database. No internet.
+  meta:
+    internal: true
+  # Fleetdock <-> the sandbox. No internet, and no way to the metadata database.
+  sandbox:
+    internal: true
+
+configs:
+  caddyfile:
+    content: |
+      {$$FLEETDOCK_SITE_ADDRESS} {
+      	encode zstd gzip
+      	header Strict-Transport-Security "max-age=31536000"
+      	header X-Robots-Tag "noindex, nofollow"
+      	request_body {
+      		max_size 10MB
+      	}
+      	reverse_proxy fleetdock:8080
+      }
+
+volumes:
+  metadata_data:
+  caddy_data:
+  caddy_config:

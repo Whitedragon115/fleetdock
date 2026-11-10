@@ -19,11 +19,31 @@ export default function LoginPage() {
   // and go back to the page afterwards.
   const [expired, setExpired] = useState(false);
   const [next, setNext] = useState<string | null>(null);
+  // A public demo signs visitors in on its own (POST /v1/auth/demo); a normal
+  // install answers 404 there and the form is shown.
+  const [demo, setDemo] = useState<"trying" | "off">("trying");
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     setExpired(q.get("expired") === "1");
-    setNext(safeNext(q.get("next")));
-  }, []);
+    const dest = safeNext(q.get("next"));
+    setNext(dest);
+    let cancelled = false;
+    api
+      .post("/v1/auth/demo", {})
+      .then(() => {
+        if (cancelled) return;
+        clearLegacyToken();
+        router.replace(dest ?? "/dashboard");
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        if (err instanceof ApiError && err.status !== 404) setError(err.message);
+        setDemo("off");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -72,6 +92,13 @@ export default function LoginPage() {
       </aside>
 
       <main className="auth-main">
+        {demo === "trying" ? (
+          <div className="card auth-card" aria-busy="true">
+            <p className="muted text-sm m-0" role="status">
+              Opening Fleetdock…
+            </p>
+          </div>
+        ) : (
         <div className="card auth-card">
           <div className="mb-5">
             <h1 className="text-xl font-semibold m-0">Sign in</h1>
@@ -114,6 +141,7 @@ export default function LoginPage() {
             </Button>
           </form>
         </div>
+        )}
       </main>
     </div>
   );

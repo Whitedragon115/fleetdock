@@ -2315,3 +2315,13 @@
     }
   }
 }
+
+/* Public demo notice under the top bar (demo mode only). */
+.demo-banner {
+  padding: 0.4rem 1rem;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: var(--fg);
+  background: var(--warning-soft);
+  border-bottom: 1px solid color-mix(in srgb, var(--warning) 30%, transparent);
+}

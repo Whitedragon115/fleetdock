@@ -793,6 +793,7 @@ components:
         grants: {type: array, items: {type: object, properties: {permission: {type: string}, scope_id: {type: string}, scope_type: {type: string}}, required: [permission, scope_type]}}
         id: {type: string}
         permissions: {type: array, items: {type: string}}
+        demo: {type: boolean, description: "Set for the public demo's shared visitor account."}
 
     NewAPIToken:
       type: object
@@ -2258,6 +2259,23 @@ paths:
       description: >
         Returns a JWT for API clients and also sets the `fleetdock_session`
         httpOnly cookie the dashboard uses (see the cookieAuth scheme).
+      responses:
+        "200":
+          description: JWT issued (also set as the session cookie)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LoginResponse"
+        default: {$ref: "#/components/responses/Error"}
+
+  /v1/auth/demo:
+    post:
+      tags: [Auth]
+      summary: Public demo sign-in
+      description: >
+        Only in public demo mode (FLEETDOCK_DEMO_MODE): signs the caller in as
+        the shared visitor account and sets the session cookie, like a
+        password login. Answers 404 when demo mode is off.
       responses:
         "200":
           description: JWT issued (also set as the session cookie)

@@ -98,7 +98,7 @@ func TestOpenAPI_OperationsAreComplete(t *testing.T) {
 	if err := yaml.Unmarshal(spec, &doc); err != nil {
 		t.Fatal(err)
 	}
-	public := map[string]bool{"POST /v1/auth/login": true}
+	public := map[string]bool{"POST /v1/auth/login": true, "POST /v1/auth/demo": true}
 	for path, ops := range doc.Paths {
 		for method, op := range ops {
 			if method == "parameters" {

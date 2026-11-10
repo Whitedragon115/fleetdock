@@ -198,6 +198,23 @@ func (s *Service) Authenticate(ctx context.Context, email, password string) (Log
 	return LoginResult{Token: tok, User: creds.User}, nil
 }
 
+// SessionFor issues a browser session for an existing, active account without
+// a password. Only the public demo uses it, for its shared visitor account.
+func (s *Service) SessionFor(ctx context.Context, email string) (LoginResult, error) {
+	creds, err := s.users.GetCredentialsByEmail(ctx, strings.TrimSpace(strings.ToLower(email)))
+	if err != nil {
+		return LoginResult{}, apperr.Unauthorized("the demo account is not available")
+	}
+	if creds.User.Status != "active" {
+		return LoginResult{}, apperr.Unauthorized("the demo account is not available")
+	}
+	tok, err := s.jwt.Issue(creds.User.ID.String(), creds.User.TokenEpoch)
+	if err != nil {
+		return LoginResult{}, apperr.Internal(err)
+	}
+	return LoginResult{Token: tok, User: creds.User}, nil
+}
+
 // Logout ends the user's browser sessions by advancing the token epoch, so
 // every JWT issued so far — including copies an attacker may have lifted —
 // stops working. API tokens are unaffected.

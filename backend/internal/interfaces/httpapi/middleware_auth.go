@@ -28,6 +28,7 @@ func NewAuthenticator(svc *authapp.Service) *Authenticator {
 			"/healthz":       true,
 			"/readyz":        true,
 			"/v1/auth/login": true,
+			"/v1/auth/demo":  true,
 			"/openapi.yaml":  true,
 			"/docs":          true,
 		},

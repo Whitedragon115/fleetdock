@@ -31,6 +31,7 @@ import (
 	dbaccessapp "github.com/Fleetdock/fleetdock/backend/internal/app/dbaccess"
 	dbadminapp "github.com/Fleetdock/fleetdock/backend/internal/app/dbadmin"
 	dbcredentialapp "github.com/Fleetdock/fleetdock/backend/internal/app/dbcredential"
+	demoapp "github.com/Fleetdock/fleetdock/backend/internal/app/demo"
 	destinationapp "github.com/Fleetdock/fleetdock/backend/internal/app/destination"
 	endpointapp "github.com/Fleetdock/fleetdock/backend/internal/app/endpoint"
 	fleetapp "github.com/Fleetdock/fleetdock/backend/internal/app/fleet"
@@ -255,6 +256,17 @@ func run() error {
 		slog.Info("bootstrapped admin account", "email", cfg.AdminEmail)
 	}
 
+	// Public demo: the visitor account and the sandbox instance.
+	if cfg.Demo.Enabled {
+		demoSvc := demoapp.NewService(cfg.Demo, userSvc, instanceSvc, postgres.NewDemoRepository(pool))
+		if err := demoSvc.Bootstrap(ctx); err != nil {
+			return fmt.Errorf("demo mode: %w", err)
+		}
+		go demoSvc.Run(ctx)
+		slog.Warn("DEMO MODE: anyone who opens the dashboard is signed in as " + cfg.Demo.Email +
+			"; password sign-in and every administrative API route are off")
+	}
+
 	// Background worker: control-plane operations, offline detection,
 	// scheduled backups, retention, alert evaluation + notification dispatch.
 	if cfg.WorkerEnabled {
@@ -305,13 +317,17 @@ func run() error {
 	dbadminHandler := httpapi.NewDBAdminHandler(dbadminSvc, resolver)
 	dbadminHandler.SetCopies(copySvc)
 	dbadminHandler.SetSchemaHistory(schemaSvc)
+	authHandler := httpapi.NewAuthHandler(authSvc, httpapi.SessionCookieConfig{
+		TTL: cfg.JWTTTL,
+		// An HTTPS public URL means browsers always reach us over TLS,
+		// even when a proxy forwards plain HTTP without X-Forwarded-Proto.
+		Secure: strings.HasPrefix(strings.ToLower(cfg.PublicURL), "https://"),
+	})
+	if cfg.Demo.Enabled {
+		authHandler.WithDemo(cfg.Demo.Email)
+	}
 	router := httpapi.NewRouter(httpapi.RouterDeps{
-		Auth: httpapi.NewAuthHandler(authSvc, httpapi.SessionCookieConfig{
-			TTL: cfg.JWTTTL,
-			// An HTTPS public URL means browsers always reach us over TLS,
-			// even when a proxy forwards plain HTTP without X-Forwarded-Proto.
-			Secure: strings.HasPrefix(strings.ToLower(cfg.PublicURL), "https://"),
-		}),
+		Auth:              authHandler,
 		Servers:           httpapi.NewServerHandler(serverSvc),
 		Instances:         httpapi.NewInstanceHandler(instanceSvc, resolver).WithProbe(probeSvc),
 		Databases:         httpapi.NewDatabaseHandler(databaseSvc, resolver),
@@ -346,6 +362,7 @@ func run() error {
 		MetricsToken:      cfg.MetricsToken,
 		MetricsGauges:     fleetGauges(statsRepo),
 		UI:                uiHandler,
+		Demo:              cfg.Demo.Enabled,
 	})
 
 	srv := &http.Server{

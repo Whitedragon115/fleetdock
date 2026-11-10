@@ -66,6 +66,8 @@ type RouterDeps struct {
 	// dashboard, reverse-proxied to a co-resident Node process. Nil keeps the
 	// API-only behaviour, where unknown paths 404.
 	UI http.Handler
+	// Demo limits the API to the public demo's allowlist (demo_guard.go).
+	Demo bool
 }
 
 // NewRouter builds the HTTP handler tree with authentication, RBAC, CORS,
@@ -147,6 +149,7 @@ func NewRouter(d RouterDeps) http.Handler {
 	// Auth (login is rate limited per client IP)
 	limiter := newLoginLimiter(10, time.Minute, d.TrustProxyHeaders)
 	mux.HandleFunc("POST /v1/auth/login", limiter.Middleware(d.Auth.Login))
+	mux.HandleFunc("POST /v1/auth/demo", d.Auth.DemoLogin)
 	mux.HandleFunc("GET /v1/auth/me", requirePerm("", d.Auth.Me))
 	mux.HandleFunc("POST /v1/auth/logout", requirePerm("", d.Auth.Logout))
 
@@ -376,7 +379,11 @@ func NewRouter(d RouterDeps) http.Handler {
 	// preflight handling, and Next's own immutable caching for /_next/static
 	// must survive — see uiproxy.Handler for the headers it does get.
 	audit := &auditLog{svc: d.Audit, mux: mux, routes: auditRoutes, trustProxy: d.TrustProxyHeaders}
-	api := securityHeaders(cors(d.CORSOrigin, d.CORSCredentials, d.Authn.Middleware(audit.Handler(mux))))
+	inner := d.Authn.Middleware(audit.Handler(mux))
+	if d.Demo {
+		inner = demoGuard(mux, d.TrustProxyHeaders, inner)
+	}
+	api := securityHeaders(cors(d.CORSOrigin, d.CORSCredentials, inner))
 	if d.UI == nil {
 		return requestLogger(recoverer(api))
 	}

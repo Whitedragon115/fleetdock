@@ -290,6 +290,8 @@ export interface Me {
   name: string;
   permissions: string[];
   grants: Grant[];
+  /** The public demo's shared visitor account. */
+  demo?: boolean;
 }
 
 export interface RoleGrant {

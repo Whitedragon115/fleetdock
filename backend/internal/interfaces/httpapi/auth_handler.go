@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	auditapp "github.com/Fleetdock/fleetdock/backend/internal/app/audit"
@@ -17,6 +18,36 @@ type AuthHandler struct {
 	svc    *authapp.Service
 	cookie SessionCookieConfig
 	guard  *accountGuard
+	// demoEmail, when set, is the shared visitor account of the public demo:
+	// POST /v1/auth/demo signs anyone in as it, and logging out only clears
+	// the caller's cookie (ending every session would sign out all visitors).
+	demoEmail string
+}
+
+// WithDemo enables the public demo's automatic sign-in as email.
+func (h *AuthHandler) WithDemo(email string) *AuthHandler {
+	h.demoEmail = email
+	return h
+}
+
+// DemoLogin handles POST /v1/auth/demo: in demo mode it signs the caller in
+// as the shared visitor account; otherwise the route does not exist.
+func (h *AuthHandler) DemoLogin(w http.ResponseWriter, r *http.Request) {
+	if h.demoEmail == "" {
+		http.NotFound(w, r)
+		return
+	}
+	res, err := h.svc.SessionFor(r.Context(), h.demoEmail)
+	if err != nil {
+		writeError(w, err)
+		return
+	}
+	auditapp.SetActor(r.Context(), &res.User.ID, res.User.Email)
+	h.cookie.set(w, r, res.Token)
+	writeJSON(w, http.StatusOK, loginResponse{
+		Token: res.Token,
+		User:  userSummary{ID: res.User.ID.String(), Email: res.User.Email},
+	})
 }
 
 // NewAuthHandler builds the auth handler. Login sets the dashboard's session
@@ -54,6 +85,8 @@ type meResponse struct {
 	Name        string     `json:"name"`
 	Permissions []string   `json:"permissions"`
 	Grants      []grantDTO `json:"grants"`
+	// Demo is set for the public demo's shared visitor account.
+	Demo bool `json:"demo,omitempty"`
 }
 
 func toGrantDTOs(grants []authz.Grant) []grantDTO {
@@ -116,12 +149,18 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		Name:        p.Name,
 		Permissions: p.Permissions(),
 		Grants:      toGrantDTOs(p.Grants()),
+		Demo:        h.demoEmail != "" && strings.EqualFold(p.Email, h.demoEmail),
 	})
 }
 
 // Logout handles POST /v1/auth/logout: it invalidates every browser session
 // (JWT) of the caller and clears the session cookie.
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
+	if h.demoEmail != "" {
+		h.cookie.clear(w, r)
+		writeJSON(w, http.StatusNoContent, nil)
+		return
+	}
 	p := principalFrom(r.Context())
 	if err := h.svc.Logout(r.Context(), p.UserID); err != nil {
 		writeError(w, err)
