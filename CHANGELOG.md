@@ -25,6 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Your name in the top bar.** The account menu shows your display name and
   its initials (your email on hover), falling back to the email. API: `GET
   /v1/me` returns `name`.
+- **Appearance settings.** Settings → Appearance chooses the theme (Light,
+  Dark or System), the style (Classic, or a compact gray Neutral style) and
+  a Borderless option. Saved in the browser and applied before the page
+  shows.
 
 ### Changed
 
