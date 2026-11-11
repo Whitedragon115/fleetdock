@@ -3,9 +3,11 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, type Dispatch } from "react";
 
 import { useConfirm } from "@/components/confirm";
+import { JsonEditor } from "./json-editor";
+import { JsonViewer } from "./json-viewer";
 import { FilterEditor, ImportCSV, RowRange } from "./row-tools";
 import { SchemaView } from "@/components/database/table-structure";
-import { useToast } from "@/components/toast";
+import { useCopy, useToast } from "@/components/toast";
 import {
   Badge,
   Button,
@@ -17,11 +19,20 @@ import {
   Pagination,
   SegmentedControl,
   Select,
-  Skeleton,
   Spinner,
   Textarea,
 } from "@/components/ui";
-import { cellKind, isTruncated, mutationSQL, prettyValue, quoteTable, type Dialect } from "@/lib/data-browser/cells";
+import {
+  cellKind,
+  compactJson,
+  formatJson,
+  isTruncated,
+  mutationSQL,
+  parseJsonDoc,
+  prettyValue,
+  quoteTable,
+  type Dialect,
+} from "@/lib/data-browser/cells";
 import {
   changeCount,
   emptyPending,
@@ -36,7 +47,7 @@ import { fkByColumn, followFilters, referencingFilters, type RowRecord } from "@
 import { describeValue, filterFor, fromDraft, opLabel, toDraft } from "@/lib/data-browser/filters";
 import { applySavedState } from "@/lib/data-browser/view-state";
 import { exportTableCSV, useTableViews, useApplyRowChanges, useBrowseRows, useForeignKeys, useReferencedBy } from "@/lib/hooks";
-import type { ForeignKey, RowFilter, SavedTableView, SortKey } from "@/lib/types";
+import type { ForeignKey, QueryResult, RowFilter, SavedTableView, SortKey } from "@/lib/types";
 import {
   ClipboardCopy,
   Download,
@@ -44,6 +55,7 @@ import {
   Lock,
   History,
   PanelRight,
+  ListOrdered,
   Rows2,
   Rows3,
   Plus,
@@ -56,11 +68,14 @@ import {
 } from "lucide-react";
 
 import { cellState, DataGrid, type Cell, type GridRow } from "./data-grid";
+import { CommandPanel } from "./command-panel";
+import { ResultGrid } from "./result-grid";
 import { BackupCompare } from "./backup-compare";
 import { RowHistory, useRowUndo } from "./row-history";
 import { ColumnsMenu } from "./columns-menu";
 import { ViewsMenu } from "./views-menu";
 import { RowPanel } from "./row-panel";
+import { GridSkeleton } from "./skeleton";
 
 
 /**
@@ -75,6 +90,7 @@ export function TableTab({
   canWrite,
   canBackup,
   dialect,
+  engine,
   dispatch,
   onDirty,
   onOpen,
@@ -88,6 +104,8 @@ export function TableTab({
   canWrite: boolean;
   canBackup: boolean;
   dialect: Dialect;
+  /** Engine of the database, for the command panel's editor. */
+  engine?: string;
   dispatch: Dispatch<Action>;
   onDirty: (id: string, changes: number) => void;
   onOpen: (req: OpenRequest) => void;
@@ -99,6 +117,7 @@ export function TableTab({
   const view = tab.view;
   const isView = tab.kind === "view";
   const { push } = useToast();
+  const copy = useCopy();
   const confirm = useConfirm();
   const setView = useCallback(
     (patch: Partial<TableView>, pin = true) => dispatch({ type: "update", id: tab.id, view: patch, pin }),
@@ -368,7 +387,17 @@ export function TableTab({
       save("value-panel", v === "none" ? null : v === "value" ? "1" : "row");
       return v;
     });
-  const togglePanel = () => showSide("value");
+  // Editing a JSON cell opens the value panel in edit mode. Each request has
+  // its own id; the panel starts editing once per id.
+  const [panelEdit, setPanelEdit] = useState<number | null>(null);
+  const editJsonInPanel = () => {
+    setPanelEdit((n) => (n ?? 0) + 1);
+    if (side !== "value") showSide("value");
+  };
+  const togglePanel = () => {
+    setPanelEdit(null);
+    showSide("value");
+  };
   const toggleRowPanel = () => showSide("row");
   const openRowPanel = () => {
     if (side !== "row") showSide("row");
@@ -382,8 +411,24 @@ export function TableTab({
       save("density", next === "compact" ? null : next);
       return next;
     });
+  const [rowNumbers, setRowNumbers] = useState(() => load("row-numbers") !== "0");
+  const toggleRowNumbers = () =>
+    setRowNumbers((v) => {
+      save("row-numbers", v ? "0" : null);
+      return !v;
+    });
   const [historyOpen, setHistoryOpen] = useState(false);
   const [compareOpen, setCompareOpen] = useState(false);
+  // The SQL command panel under the grid; its open state is remembered.
+  const [commandOpen, setCommandOpen] = useState(() => load("command-panel") === "1");
+  // A command panel read's rows, shown in place of the table until dismissed.
+  const [commandResult, setCommandResult] = useState<{ sql: string; result: QueryResult } | null>(null);
+  const toggleCommand = () =>
+    setCommandOpen((v) => {
+      if (v) setCommandResult(null);
+      save("command-panel", v ? null : "1");
+      return !v;
+    });
 
   const readOnlyReason = isView
     ? "Views are read-only."
@@ -513,6 +558,16 @@ export function TableTab({
             >
               <Rows3 size={15} aria-hidden />
             </IconButton>
+            <IconButton
+              noTooltip
+              label="Toggle command panel"
+              active={commandOpen}
+              onClick={toggleCommand}
+              title="Command panel: run SQL under the grid"
+              aria-pressed={commandOpen}
+            >
+              <SquareTerminal size={15} aria-hidden />
+            </IconButton>
             {editable ? (
               <Button size="sm" variant="primary" icon={<Plus size={14} aria-hidden />} onClick={addRow}>
                 Row
@@ -546,13 +601,19 @@ export function TableTab({
             {
               label: "Copy name",
               icon: <ClipboardCopy size={15} />,
-              onSelect: () => void navigator.clipboard?.writeText(tab.name),
+              onSelect: () => copy(tab.name, `Copied ${tab.name}`),
             },
             {
               label: density === "compact" ? "Taller rows" : "Compact rows",
               icon: <Rows2 size={15} />,
               hidden: view.mode !== "data",
               onSelect: toggleDensity,
+            },
+            {
+              label: rowNumbers ? "Hide row numbers" : "Show row numbers",
+              icon: <ListOrdered size={15} />,
+              hidden: view.mode !== "data",
+              onSelect: toggleRowNumbers,
             },
           ]}
         />
@@ -620,7 +681,27 @@ export function TableTab({
       ) : (
         <div className="dbx-body">
           <div className="dbx-grid-wrap">
-            {isLoading ? (
+            {commandResult ? (
+              <>
+                <div className="dbx-cmd-result-bar" role="status">
+                  <SquareTerminal size={14} aria-hidden />
+                  <span className="font-medium text-sm">Query result</span>
+                  <span className="text-sm muted">
+                    {commandResult.result.row_count.toLocaleString()} row{commandResult.result.row_count === 1 ? "" : "s"} ·{" "}
+                    {commandResult.result.duration_ms} ms
+                    {commandResult.result.truncated ? " · stopped at the row limit; add a LIMIT" : ""}
+                  </span>
+                  <code className="dbx-cmd-result-sql text-sm muted hide-sm" title={commandResult.sql}>
+                    {commandResult.sql.replace(/\s+/g, " ")}
+                  </code>
+                  <div className="flex-1" />
+                  <Button size="sm" onClick={() => setCommandResult(null)}>
+                    Back to table
+                  </Button>
+                </div>
+                <ResultGrid key={commandResult.sql + commandResult.result.duration_ms} result={commandResult.result} dialect={dialect} />
+              </>
+            ) : isLoading ? (
               <GridSkeleton />
             ) : error ? (
               <div className="dbx-center">
@@ -682,11 +763,13 @@ export function TableTab({
                 onHideColumn={(name) => setView({ hidden: [...(view.hidden ?? []), name] }, false)}
                 onFreeze={(frozen) => setView({ frozen }, false)}
                 onRowDetail={openRowPanel}
+                onEditJson={editJsonInPanel}
                 onFilterColumn={(name) => {
                   const c = columns.find((x) => x.name === name);
                   openFilters(undefined, filterFor(name, c ? cellKind(c.type) === "text" : false));
                 }}
                 density={density}
+                rowNumbers={rowNumbers}
                 emptyText={
                   filtered
                     ? "No rows match the search or filters."
@@ -699,7 +782,7 @@ export function TableTab({
               />
             )}
           </div>
-          {panel ? (
+          {panel && !commandResult ? (
             <ValuePanel
               row={cursor ? rows[cursor.row] : undefined}
               col={cursor ? columns[cursor.col] : undefined}
@@ -710,10 +793,11 @@ export function TableTab({
                   : false
               }
               onApply={(v) => cursor && onEdit(cursor.row, cursor.col, v)}
+              editRequest={panelEdit}
               onClose={togglePanel}
             />
           ) : null}
-          {side === "row" ? (
+          {side === "row" && !commandResult ? (
             <RowPanel
               row={cursor ? rows[cursor.row] : undefined}
               label={(() => {
@@ -781,11 +865,33 @@ export function TableTab({
         </div>
       ) : null}
 
+      {view.mode === "data" && commandOpen ? (
+        <CommandPanel
+          databaseId={databaseId}
+          table={tab.name}
+          quotedTable={quoted}
+          engine={engine}
+          canWrite={canWrite}
+          onResult={(sql, result) => setCommandResult({ sql, result })}
+          onWrote={() => {
+            setCommandResult(null);
+            void refetch();
+          }}
+          onClose={toggleCommand}
+        />
+      ) : null}
+
       {view.mode === "data" ? (
         <div className="dbx-footer">
           <span className="text-sm muted">
-            {data && data.rows.length > 0 ? <RowRange data={data} offset={offset} /> : data ? "No rows" : ""}
-            {selected.size > 1 ? ` · ${selected.size} selected` : ""}
+            {commandResult ? (
+              `Query result: ${commandResult.result.row_count.toLocaleString()} row${commandResult.result.row_count === 1 ? "" : "s"}`
+            ) : (
+              <>
+                {data && data.rows.length > 0 ? <RowRange data={data} offset={offset} /> : data ? "No rows" : ""}
+                {selected.size > 1 ? ` · ${selected.size} selected` : ""}
+              </>
+            )}
           </span>
           <div className="flex-1" />
           <label className="flex items-center gap-1 text-sm muted">
@@ -793,7 +899,10 @@ export function TableTab({
             <Select
               className="dbx-pagesize"
               value={view.pageSize}
-              onChange={(e) => setView({ pageSize: Number(e.target.value), page: 1 })}
+              onChange={(e) => {
+                setCommandResult(null);
+                setView({ pageSize: Number(e.target.value), page: 1 });
+              }}
               aria-label="Rows per page"
             >
               {PAGE_SIZES.map((n) => (
@@ -807,7 +916,10 @@ export function TableTab({
             page={view.page}
             pageCount={pageCount}
             hasMore={hasFullPage}
-            onPage={(page) => setView({ page })}
+            onPage={(page) => {
+              setCommandResult(null);
+              setView({ page });
+            }}
           />
         </div>
       ) : null}
@@ -842,24 +954,14 @@ export function TableTab({
   );
 }
 
-/** GridSkeleton stands in for the grid while the first page of rows loads. */
-function GridSkeleton() {
-  return (
-    <div className="dbx-grid-skeleton" role="status" aria-label="Loading rows">
-      <div className="dbx-grid-skeleton-head" aria-hidden>
-        {[7, 10, 6, 9, 8].map((w, i) => (
-          <Skeleton key={i} width={`${w}rem`} height=".8rem" />
-        ))}
-      </div>
-      {Array.from({ length: 12 }, (_, r) => (
-        <div key={r} className="dbx-grid-skeleton-row" aria-hidden>
-          {[5, 9, 4, 7, 6].map((w, i) => (
-            <Skeleton key={i} width={`${w + ((r * 3 + i) % 4)}rem`} height=".7rem" />
-          ))}
-        </div>
-      ))}
-    </div>
-  );
+/** isJson reports whether text parses as JSON. */
+function isJson(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** ValuePanel shows the selected cell in full and edits long or multi-line values. */
@@ -869,6 +971,7 @@ function ValuePanel({
   ci,
   editable,
   onApply,
+  editRequest,
   onClose,
 }: {
   row?: GridRow;
@@ -876,19 +979,41 @@ function ValuePanel({
   ci: number;
   editable: boolean;
   onApply: (v: string | null) => void;
+  /** A new id here starts editing the selected cell (a JSON cell edited from the grid). */
+  editRequest: number | null;
   onClose: () => void;
 }) {
   const st = row && col ? cellState(row, col, ci) : null;
   const [draft, setDraft] = useState<string | null>(null);
   const cellKey = row && col ? `${row.kind === "new" ? row.id : row.index}:${col.name}` : "";
   const [prevKey, setPrevKey] = useState(cellKey);
-  if (prevKey !== cellKey) {
+  const cellChanged = prevKey !== cellKey;
+  if (cellChanged) {
     setPrevKey(cellKey);
     setDraft(null);
   }
   const { push } = useToast();
+  const copy = useCopy();
   const kind = col ? cellKind(col.type) : "text";
   const locked = st ? isTruncated(st.original) && !st.changed : false;
+  const jsonDoc = st ? parseJsonDoc(st.value) : undefined;
+  // A JSON column, or a cell holding a JSON object or array, is edited as JSON.
+  const jsonCell = kind === "json" || jsonDoc !== undefined;
+  // Editing starts from the value, with a JSON object or array pretty-printed.
+  const draftStart = st ? (jsonDoc !== undefined ? formatJson(st.value ?? "") : (st.value ?? "")) : "";
+  const applyJson = (text: string) => {
+    // Unchanged since it was formatted: keep the stored text as it is.
+    // Otherwise valid JSON is saved on one line again, like it was stored.
+    if (text !== draftStart) onApply(isJson(text) ? compactJson(text) : text);
+    setDraft(null);
+  };
+  const cancelJson = () => setDraft(null);
+  const [seenEditRequest, setSeenEditRequest] = useState<number | null>(null);
+  if (editRequest !== seenEditRequest) {
+    setSeenEditRequest(editRequest);
+    // Keep a draft already being edited for this cell.
+    if (editRequest !== null && st && editable && !locked && (draft === null || cellChanged)) setDraft(draftStart);
+  }
 
   return (
     <aside className="dbx-valuepanel" aria-label="Value panel">
@@ -906,27 +1031,35 @@ function ValuePanel({
         </p>
       ) : draft !== null ? (
         <div className="dbx-valuepanel-body">
-          <Textarea
-            className="dbx-valuepanel-edit"
-            value={draft}
-            autoFocus
-            onChange={(e) => setDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-                onApply(draft);
-                setDraft(null);
-              } else if (e.key === "Escape") {
-                e.stopPropagation();
-                setDraft(null);
-              }
-            }}
-            spellCheck={false}
-          />
+          {jsonCell ? (
+            <JsonEditor value={draft} onChange={setDraft} onApply={applyJson} onCancel={cancelJson} />
+          ) : (
+            <Textarea
+              className="dbx-valuepanel-edit"
+              value={draft}
+              autoFocus
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
+                  onApply(draft);
+                  setDraft(null);
+                } else if (e.key === "Escape") {
+                  e.stopPropagation();
+                  setDraft(null);
+                }
+              }}
+              spellCheck={false}
+            />
+          )}
           <div className="flex flex-wrap gap-2">
             <Button
               size="sm"
               variant="primary"
               onClick={() => {
+                if (jsonCell) {
+                  applyJson(draft);
+                  return;
+                }
                 onApply(draft);
                 setDraft(null);
               }}
@@ -936,8 +1069,8 @@ function ValuePanel({
             <Button size="sm" onClick={() => setDraft(null)}>
               Cancel
             </Button>
-            {kind === "json" ? (
-              <Button variant="ghost" size="sm" onClick={() => setDraft(prettyValue(draft, "json"))}>
+            {kind === "json" || parseJsonDoc(draft) ? (
+              <Button variant="ghost" size="sm" onClick={() => setDraft(isJson(draft) ? formatJson(draft) : draft)}>
                 Format JSON
               </Button>
             ) : null}
@@ -952,6 +1085,8 @@ function ValuePanel({
             <span className="dbx-pill">DEFAULT</span>
           ) : st.value === null ? (
             <span className="dbx-pill">NULL</span>
+          ) : jsonDoc ? (
+            <JsonViewer key={cellKey} doc={jsonDoc} />
           ) : (
             <pre className="dbx-valuepanel-pre">{prettyValue(st.value, kind)}</pre>
           )}
@@ -960,13 +1095,13 @@ function ValuePanel({
               <Button
                 size="sm"
                 icon={<ClipboardCopy size={13} aria-hidden />}
-                onClick={() => void navigator.clipboard?.writeText(st.value ?? "").then(() => push("success", "Copied value"))}
+                onClick={() => copy(st.value ?? "", "Copied value")}
               >
                 Copy
               </Button>
             ) : null}
             {editable && !locked ? (
-              <Button size="sm" onClick={() => setDraft(st.value ?? "")}>
+              <Button size="sm" onClick={() => setDraft(draftStart)}>
                 Edit
               </Button>
             ) : null}
